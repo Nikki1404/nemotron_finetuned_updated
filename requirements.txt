@@ -1,0 +1,11 @@
+fastapi
+huggingface_hub
+librosa
+numpy
+python-multipart
+resampy
+scipy
+soundfile
+uvicorn[standard]
+websockets
+nemo-text-processing
