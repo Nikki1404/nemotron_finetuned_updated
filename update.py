@@ -1,4 +1,4 @@
-docker run --gpus all -it --rm -v $PWD:/workspace -v $PWD/ft_models:/srv/models nemotron_finetuned bash
+docker run --gpus all -it --rm -v $PWD:/workspace -v $PWD/ft_models:/srv/models nemo_finetuned bash
 
 cd /workspace
 
@@ -86,11 +86,11 @@ ls -lh /srv/models/finetuned_nemotron_final.nemo
 
 exit
 
-cd /home/CORP/re_nikitav/nemotron_finetuned
+cd /home/CORP/re_nikitav/nemo_finetuned
 
 ls -lh ft_models/finetuned_nemotron_final.nemo
 
-docker build -t nemotron_finetuned .
+docker build -t nemo_finetuned .
 
-docker run --gpus all -it --rm -p 8003:8003 -v $PWD:/workspace -v $PWD/ft_models:/srv/models -e MODEL_NAME=/srv/models/finetuned_nemotron_final.nemo -e VAD_START_MARGIN=1.8 -e VAD_MIN_NOISE_RMS=0.002 -e PRE_SPEECH_MS=500 -e NEMO_END_SILENCE_MS=900 -e FINALIZE_PAD_MS=800 -e CONTEXT_RIGHT=2 -e NEMO_MAX_SYMBOLS=15 nemotron_finetuned uvicorn app.main:app --host 0.0.0.0 --port 8003
+docker run --gpus all -it --rm -p 8002:8002 -v $PWD:/workspace -v $PWD/ft_models:/srv/models -e MODEL_NAME=/srv/models/finetuned_nemotron_final.nemo -e VAD_START_MARGIN=1.8 -e VAD_MIN_NOISE_RMS=0.002 -e PRE_SPEECH_MS=500 -e NEMO_END_SILENCE_MS=900 -e FINALIZE_PAD_MS=800 -e CONTEXT_RIGHT=2 -e NEMO_MAX_SYMBOLS=15 nemo_finetuned uvicorn app.main:app --host 0.0.0.0 --port 8002
 
