@@ -1,5 +1,50 @@
 docker run --gpus all -d --name nemotron_server -p 8003:8003 -e MODEL_NAME=/srv/nemotron-3.5-asr-streaming-0.6b.nemo nemotron_3.5
 docker run --gpus all -d --name nemotron_en --restart unless-stopped -p 8003:8003 -v /home/CORP/re_nikitav/nemotron_finetuned/ft_models:/srv/models -e MODEL_NAME=/srv/models/finetuned_nemotron_final.nemo nemotron_3.5
+i am getting this 
+(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/nemotron_finetuned_updated# docker logs 80f2bf70e7f2
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.4.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+DEBUG: Startup cfg.model_name='/srv/models/finetuned_nemotron_final.nemo' cfg.asr_backend='nemotron'
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+2026-07-21 13:55:05,123 | INFO | asr_server | Server startup initiated
+2026-07-21 13:55:05,123 | INFO | asr_server | Preloading ASR engines...
+2026-07-21 13:55:05,123 | INFO | asr_server | Initializing engine: nemotron (/srv/models/finetuned_nemotron_final.nemo)
+2026-07-21 13:55:18,525 | WARNING | nv_one_logger.api.config | OneLogger: Setting error_handling_strategy to DISABLE_QUIETLY_AND_REPORT_METRIC_ERROR for rank (rank=0) with OneLogger disabled. To override: explicitly set error_handling_strategy parameter.
+2026-07-21 13:55:18,536 | INFO | nv_one_logger.exporter.export_config_manager | Final configuration contains 0 exporter(s)
+2026-07-21 13:55:18,536 | WARNING | nv_one_logger.training_telemetry.api.training_telemetry_provider | No exporters were provided. This means that no telemetry data will be collected.
+2026-07-21 13:55:22,055 | ERROR | asr_server | Failed to preload 'nemotron'
+Traceback (most recent call last):
+  File "/srv/app/main.py", line 142, in preload_engines
+    load_sec = engine.load()
+               ^^^^^^^^^^^^^
+  File "/srv/app/asr_engines/nemotron_asr.py", line 107, in load
+    self.model = nemo_asr.models.EncDecRNNTBPEModelWithPrompt.restore_from(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/nemo/collections/asr/models/rnnt_bpe_models_prompt.py", line 132, in restore_from
+INFO:     Application startup complete.
+    return EncDecRNNTBPEModel.restore_from(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/nemo/core/classes/modelPT.py", line 483, in restore_from
+    raise FileNotFoundError(f"Can't find {restore_path}")
+FileNotFoundError: Can't find /srv/models/finetuned_nemotron_final.nemo
+2026-07-21 13:55:22,058 | INFO | asr_server | All engines preloaded. Available: []
+INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
+
+
 #app/main.py-
 import asyncio
 import json
