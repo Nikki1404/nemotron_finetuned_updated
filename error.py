@@ -1,68 +1,22 @@
 docker run --gpus all -d --name nemotron_server -p 8003:8003 -e MODEL_NAME=/srv/nemotron-3.5-asr-streaming-0.6b.nemo nemotron_3.5
 docker run --gpus all -d --name nemotron_en --restart unless-stopped -p 8003:8003 -v /home/CORP/re_nikitav/nemotron_finetuned/ft_models:/srv/models -e MODEL_NAME=/srv/models/finetuned_nemotron_final.nemo nemotron_3.5
-i am getting this 
-(venv) PS C:\Users\re_nikitav\Documents\nemotron_finetuned> python .\client.py --mic --language en-US --realtime
-[warn] Health check failed: <urlopen error timed out> (server may still be starting)
-[info] Connecting to ws://10.90.126.61:8003/asr/realtime-custom-vad
-[info] Language: en-US
-[info] Speak into your microphone. Press Ctrl+C to stop.
 
-Traceback (most recent call last):
-  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 544, in __await_impl__
-    self.connection = await self.create_connection()
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 470, in create_connection
-    _, connection = await loop.create_connection(factory, **kwargs)
-                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python313\Lib\asyncio\base_events.py", line 1141, in create_connection
-    sock = await self._connect_sock(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^
-        exceptions, addrinfo, laddr_infos)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python313\Lib\asyncio\base_events.py", line 1044, in _connect_sock
-    await self.sock_connect(sock, address)
-  File "C:\Program Files\Python313\Lib\asyncio\proactor_events.py", line 726, in sock_connect
-    return await self._proactor.connect(sock, address)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-asyncio.exceptions.CancelledError
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 542, in __await_impl__
-    async with asyncio_timeout(self.open_timeout):
-               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python313\Lib\asyncio\timeouts.py", line 116, in __aexit__
-    raise TimeoutError from exc_val
-TimeoutError
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "C:\Users\re_nikitav\Documents\nemotron_finetuned\client.py", line 305, in <module>
-    main()
-    ~~~~^^
-  File "C:\Users\re_nikitav\Documents\nemotron_finetuned\client.py", line 299, in main
-    asyncio.run(run_mic(args.language, args.url))
-    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python313\Lib\asyncio\runners.py", line 195, in run
-    return runner.run(main)
-           ~~~~~~~~~~^^^^^^
-  File "C:\Program Files\Python313\Lib\asyncio\runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
-  File "C:\Program Files\Python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
-    return future.result()
-           ~~~~~~~~~~~~~^^
-  File "C:\Users\re_nikitav\Documents\nemotron_finetuned\client.py", line 211, in run_mic
-    async with websockets.connect(url, ping_interval=None) as ws:
-               ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 590, in __aenter__
-    return await self
-           ^^^^^^^^^^
-  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 581, in __await_impl__
-    raise TimeoutError("timed out during opening handshake") from exc
-TimeoutError: timed out during opening handshake
+[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Finan [partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[partial] Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financ[final]  Hello, I added my bank account for reimbursement, but I am not able to withdraw money to that account. Hello, thank you for calling Inspire Financial I can help you with that. But 1st I need to verify your identity can I get your member ID  (TTFB 782ms)
+[final]  Its 204003  (TTFB 465ms)
+[final]  Okay, confirm 2043  (TTFB 747ms)
+[final]  Yes, correct  (TTFB 752ms)
+[final]  Last 4 digits of your Social Security number  (TTFB 672ms)
+[final]  123004 thank you for verification I understand you are having trouble withdrawing funds. When did you add your bank account  (TTFB 756ms)
+[final]  About 2 days ago  (TTFB 759ms)
+[final]  Okay, bank accounts require secure validation, which usually takes 1 to 3 business days so your account may still be under validation  (TTFB 855ms)
+[final]  Okay, but I need the money urgently what can I do during this validation period  (TTFB 977ms)
+[final]  You may see an option for reimbursement by a check which allows you to access funds while validation completes  (TTFB 457ms)
+[final]  Okay that works  (TTFB 756ms)
+[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[partial] In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket num[final]  In another case, if you were seeing an aerolight not dalid that could indicate a technical issue and I can create a support picket your ticket number is TKT465892ANOTHERTICKETREFERENCe TKT9859808MAYFIFTHALSOBECREAted depending on issue type review takes 35 business days  (TTFB 566ms)
+[final]  Okay, thank you  (TTFB 840ms)
+[final]  Is there anything else I can help you with today  (TTFB 557ms)
+[final]  No thank  (TTFB 1033ms)
+[final]  Thank you. Have a nice day
 
 #app/main.py-
 import asyncio
