@@ -1,4 +1,5 @@
 docker run --gpus all -d --name nemotron_server -p 8003:8003 -e MODEL_NAME=/srv/nemotron-3.5-asr-streaming-0.6b.nemo nemotron_3.5
+docker run --gpus all -d --name nemotron_en --restart unless-stopped -p 8003:8003 -v /home/CORP/re_nikitav/nemotron_finetuned/ft_models:/srv/models -e MODEL_NAME=/srv/models/finetuned_nemotron_final.nemo nemotron_3.5
 #app/main.py-
 import asyncio
 import json
