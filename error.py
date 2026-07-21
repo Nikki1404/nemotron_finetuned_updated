@@ -1,49 +1,68 @@
 docker run --gpus all -d --name nemotron_server -p 8003:8003 -e MODEL_NAME=/srv/nemotron-3.5-asr-streaming-0.6b.nemo nemotron_3.5
 docker run --gpus all -d --name nemotron_en --restart unless-stopped -p 8003:8003 -v /home/CORP/re_nikitav/nemotron_finetuned/ft_models:/srv/models -e MODEL_NAME=/srv/models/finetuned_nemotron_final.nemo nemotron_3.5
 i am getting this 
-(base) root@EC03-E01-AICOE1:/home/CORP/re_nikitav/nemotron_finetuned_updated# docker logs 80f2bf70e7f2
+(venv) PS C:\Users\re_nikitav\Documents\nemotron_finetuned> python .\client.py --mic --language en-US --realtime
+[warn] Health check failed: <urlopen error timed out> (server may still be starting)
+[info] Connecting to ws://10.90.126.61:8003/asr/realtime-custom-vad
+[info] Language: en-US
+[info] Speak into your microphone. Press Ctrl+C to stop.
 
-==========
-== CUDA ==
-==========
-
-CUDA Version 12.4.1
-
-Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-
-This container image and its contents are governed by the NVIDIA Deep Learning Container License.
-By pulling and using the container, you accept the terms and conditions of this license:
-https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
-
-A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
-
-DEBUG: Startup cfg.model_name='/srv/models/finetuned_nemotron_final.nemo' cfg.asr_backend='nemotron'
-INFO:     Started server process [1]
-INFO:     Waiting for application startup.
-2026-07-21 13:55:05,123 | INFO | asr_server | Server startup initiated
-2026-07-21 13:55:05,123 | INFO | asr_server | Preloading ASR engines...
-2026-07-21 13:55:05,123 | INFO | asr_server | Initializing engine: nemotron (/srv/models/finetuned_nemotron_final.nemo)
-2026-07-21 13:55:18,525 | WARNING | nv_one_logger.api.config | OneLogger: Setting error_handling_strategy to DISABLE_QUIETLY_AND_REPORT_METRIC_ERROR for rank (rank=0) with OneLogger disabled. To override: explicitly set error_handling_strategy parameter.
-2026-07-21 13:55:18,536 | INFO | nv_one_logger.exporter.export_config_manager | Final configuration contains 0 exporter(s)
-2026-07-21 13:55:18,536 | WARNING | nv_one_logger.training_telemetry.api.training_telemetry_provider | No exporters were provided. This means that no telemetry data will be collected.
-2026-07-21 13:55:22,055 | ERROR | asr_server | Failed to preload 'nemotron'
 Traceback (most recent call last):
-  File "/srv/app/main.py", line 142, in preload_engines
-    load_sec = engine.load()
-               ^^^^^^^^^^^^^
-  File "/srv/app/asr_engines/nemotron_asr.py", line 107, in load
-    self.model = nemo_asr.models.EncDecRNNTBPEModelWithPrompt.restore_from(
-                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/nemo/collections/asr/models/rnnt_bpe_models_prompt.py", line 132, in restore_from
-INFO:     Application startup complete.
-    return EncDecRNNTBPEModel.restore_from(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.11/site-packages/nemo/core/classes/modelPT.py", line 483, in restore_from
-    raise FileNotFoundError(f"Can't find {restore_path}")
-FileNotFoundError: Can't find /srv/models/finetuned_nemotron_final.nemo
-2026-07-21 13:55:22,058 | INFO | asr_server | All engines preloaded. Available: []
-INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
+  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 544, in __await_impl__
+    self.connection = await self.create_connection()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 470, in create_connection
+    _, connection = await loop.create_connection(factory, **kwargs)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\base_events.py", line 1141, in create_connection
+    sock = await self._connect_sock(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+        exceptions, addrinfo, laddr_infos)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\base_events.py", line 1044, in _connect_sock
+    await self.sock_connect(sock, address)
+  File "C:\Program Files\Python313\Lib\asyncio\proactor_events.py", line 726, in sock_connect
+    return await self._proactor.connect(sock, address)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
 
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 542, in __await_impl__
+    async with asyncio_timeout(self.open_timeout):
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\timeouts.py", line 116, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\re_nikitav\Documents\nemotron_finetuned\client.py", line 305, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\re_nikitav\Documents\nemotron_finetuned\client.py", line 299, in main
+    asyncio.run(run_mic(args.language, args.url))
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Program Files\Python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\re_nikitav\Documents\nemotron_finetuned\client.py", line 211, in run_mic
+    async with websockets.connect(url, ping_interval=None) as ws:
+               ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 590, in __aenter__
+    return await self
+           ^^^^^^^^^^
+  File "C:\Users\re_nikitav\Desktop\asr\bu-digital-cx-speech-asr-realtime-custom-vad\scripts\venv\Lib\site-packages\websockets\asyncio\client.py", line 581, in __await_impl__
+    raise TimeoutError("timed out during opening handshake") from exc
+TimeoutError: timed out during opening handshake
 
 #app/main.py-
 import asyncio
