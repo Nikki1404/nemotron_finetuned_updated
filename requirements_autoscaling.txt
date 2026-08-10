@@ -1,0 +1,9 @@
+httpx
+websockets>=14
+google-cloud-monitoring
+google-auth
+protobuf
+numpy
+scipy
+soundfile
+rapidfuzz
