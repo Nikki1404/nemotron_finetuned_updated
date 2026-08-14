@@ -5,8 +5,10 @@ import asyncio
 import http.client
 import json
 import mimetypes
+import os
 import re
 import ssl
+import tempfile
 import time
 import uuid
 import wave
@@ -39,7 +41,7 @@ _LANG_TAG_RE = re.compile(
 
 
 # =============================================================================
-# TIMER UTILITIES
+# TIMING
 # =============================================================================
 
 def now_ns():
@@ -67,8 +69,10 @@ def ws_to_openai_url(ws_url):
 
     if parsed.scheme == "wss":
         scheme = "https"
+
     elif parsed.scheme == "ws":
         scheme = "http"
+
     else:
         scheme = parsed.scheme
 
@@ -79,18 +83,29 @@ def ws_to_openai_url(ws_url):
 
 
 # =============================================================================
-# OUTPUT
+# RESULTS
 # =============================================================================
 
-def print_latency(
-    title,
-    connection_startup,
-    connection_response,
-    connection_transcription,
-    e2e_ttfb,
-    e2e_ttft,
-    e2e_total,
-):
+@dataclass
+class LatencyResult:
+    connection_startup_ms: float
+    connection_response_ms: float
+    connection_transcription_ms: float
+
+    e2e_ttfb_ms: float
+    e2e_ttft_ms: float
+    e2e_total_ms: float
+
+    first_event_type: str = ""
+    first_partial: str = ""
+    first_final: str = ""
+
+
+# =============================================================================
+# PRINT RESULTS
+# =============================================================================
+
+def print_latency(title, result):
     print()
     print("=" * 80)
     print(title)
@@ -98,37 +113,204 @@ def print_latency(
 
     print(
         f"Connection / startup       : "
-        f"{connection_startup:.2f} ms"
+        f"{result.connection_startup_ms:.2f} ms"
     )
 
     print(
         f"Connection -> response     : "
-        f"{connection_response:.2f} ms"
+        f"{result.connection_response_ms:.2f} ms"
     )
 
     print(
         f"Connection -> transcription: "
-        f"{connection_transcription:.2f} ms"
+        f"{result.connection_transcription_ms:.2f} ms"
     )
 
     print(
         f"E2E TTFB                   : "
-        f"{e2e_ttfb:.2f} ms"
+        f"{result.e2e_ttfb_ms:.2f} ms"
     )
 
     print(
         f"E2E TTFT/TTFA              : "
-        f"{e2e_ttft:.2f} ms"
+        f"{result.e2e_ttft_ms:.2f} ms"
     )
 
     print(
         f"E2E TOTAL                  : "
-        f"{e2e_total:.2f} ms"
+        f"{result.e2e_total_ms:.2f} ms"
     )
 
 
+def print_comparison(cold, warm, title):
+    print()
+    print("=" * 80)
+    print(title)
+    print("=" * 80)
+
+    metrics = [
+        (
+            "Connection / startup",
+            "connection_startup_ms",
+        ),
+        (
+            "Connection -> response",
+            "connection_response_ms",
+        ),
+        (
+            "Connection -> transcription",
+            "connection_transcription_ms",
+        ),
+        (
+            "E2E TTFB",
+            "e2e_ttfb_ms",
+        ),
+        (
+            "E2E TTFT/TTFA",
+            "e2e_ttft_ms",
+        ),
+        (
+            "E2E TOTAL",
+            "e2e_total_ms",
+        ),
+    ]
+
+    for name, attribute in metrics:
+        cold_value = getattr(
+            cold,
+            attribute,
+        )
+
+        warm_value = getattr(
+            warm,
+            attribute,
+        )
+
+        delta = (
+            cold_value
+            - warm_value
+        )
+
+        ratio = (
+            cold_value / warm_value
+            if warm_value > 0
+            else 0
+        )
+
+        print(
+            f"{name:29}: "
+            f"cold={cold_value:.2f} ms | "
+            f"warm={warm_value:.2f} ms | "
+            f"delta={delta:.2f} ms | "
+            f"{ratio:.2f}x"
+        )
+
+
 # =============================================================================
-# WAV LOADING
+# MIC RECORDING FOR OPENAI REST
+# =============================================================================
+
+def record_microphone_to_wav(duration):
+    """
+    Record microphone audio BEFORE starting REST timing.
+
+    Recording time is intentionally excluded from:
+      Connection / startup
+      Connection -> response
+      Connection -> transcription
+      E2E TTFB
+      E2E TTFT/TTFA
+      E2E TOTAL
+    """
+
+    try:
+        import numpy as np
+        import sounddevice as sd
+
+    except ImportError:
+        raise RuntimeError(
+            "Microphone mode requires:\n"
+            "py -3.11 -m pip install numpy sounddevice"
+        )
+
+    print()
+    print("=" * 80)
+    print("MICROPHONE RECORDING")
+    print("=" * 80)
+
+    print(
+        f"[info] Recording for "
+        f"{duration:.1f} seconds"
+    )
+
+    print(
+        "[info] START SPEAKING NOW"
+    )
+
+    recording_start = time.perf_counter()
+
+    audio = sd.rec(
+        int(
+            duration
+            * SAMPLE_RATE
+        ),
+        samplerate=SAMPLE_RATE,
+        channels=1,
+        dtype="int16",
+    )
+
+    sd.wait()
+
+    recording_elapsed = (
+        time.perf_counter()
+        - recording_start
+    )
+
+    print(
+        f"[info] Recording complete: "
+        f"{recording_elapsed:.2f}s"
+    )
+
+    temp_file = tempfile.NamedTemporaryFile(
+        suffix=".wav",
+        delete=False,
+    )
+
+    temp_path = temp_file.name
+    temp_file.close()
+
+    with wave.open(
+        temp_path,
+        "wb",
+    ) as wf:
+
+        wf.setnchannels(1)
+
+        wf.setsampwidth(2)
+
+        wf.setframerate(
+            SAMPLE_RATE
+        )
+
+        wf.writeframes(
+            audio.tobytes()
+        )
+
+    print(
+        f"[info] Temporary WAV: "
+        f"{temp_path}"
+    )
+
+    print(
+        "[info] Recording time is EXCLUDED "
+        "from REST latency metrics"
+    )
+
+    return temp_path
+
+
+# =============================================================================
+# WAV LOADER FOR WEBSOCKET
 # =============================================================================
 
 def load_wav_16khz_mono(file_path):
@@ -138,7 +320,7 @@ def load_wav_16khz_mono(file_path):
 
     if not path.exists():
         raise FileNotFoundError(
-            f"File not found: {file_path}"
+            f"File not found: {path}"
         )
 
     with wave.open(
@@ -146,26 +328,39 @@ def load_wav_16khz_mono(file_path):
         "rb",
     ) as wf:
 
-        channels = wf.getnchannels()
-        sample_width = wf.getsampwidth()
-        sample_rate = wf.getframerate()
-        frames = wf.getnframes()
+        channels = (
+            wf.getnchannels()
+        )
 
-        raw = wf.readframes(frames)
+        sample_width = (
+            wf.getsampwidth()
+        )
+
+        sample_rate = (
+            wf.getframerate()
+        )
+
+        nframes = (
+            wf.getnframes()
+        )
+
+        raw_audio = wf.readframes(
+            nframes
+        )
 
     if sample_width != 2:
         raise ValueError(
-            "WebSocket mode currently requires "
+            "WebSocket file mode requires "
             "16-bit PCM WAV input."
         )
 
     audio = np.frombuffer(
-        raw,
+        raw_audio,
         dtype=np.int16,
     )
 
     # -------------------------------------------------------------------------
-    # Stereo -> mono
+    # MULTICHANNEL -> MONO
     # -------------------------------------------------------------------------
 
     if channels > 1:
@@ -200,7 +395,7 @@ def load_wav_16khz_mono(file_path):
         )
 
     # -------------------------------------------------------------------------
-    # Resample -> 16 kHz
+    # RESAMPLE -> 16 KHz
     # -------------------------------------------------------------------------
 
     if sample_rate != SAMPLE_RATE:
@@ -234,12 +429,11 @@ def load_wav_16khz_mono(file_path):
         )
 
         audio = (
-            np.clip(
-                audio_f32,
+            audio_f32.clip(
                 -1.0,
                 1.0,
             )
-            * 32767
+            * 32767.0
         ).astype(
             np.int16
         )
@@ -248,56 +442,165 @@ def load_wav_16khz_mono(file_path):
 
 
 # =============================================================================
-# WEBSOCKET METRICS
+# WEBSOCKET RECEIVE STATE
 # =============================================================================
 
 @dataclass
-class WebSocketResult:
-    connection_startup_ms: float
-    connection_response_ms: float
-    connection_transcription_ms: float
-    e2e_ttfb_ms: float
-    e2e_ttft_ms: float
-    e2e_total_ms: float
+class WSState:
+    first_event_ns: int | None = None
+    first_transcription_ns: int | None = None
+    first_final_ns: int | None = None
 
     first_event_type: str = ""
+
     first_partial: str = ""
     first_final: str = ""
 
+    done_event: asyncio.Event | None = None
 
-async def run_websocket_once(
+
+# =============================================================================
+# WEBSOCKET RECEIVER
+# =============================================================================
+
+async def websocket_receiver(
+    ws,
+    state,
+):
+    try:
+
+        async for raw_message in ws:
+
+            event_ns = now_ns()
+
+            if isinstance(
+                raw_message,
+                bytes,
+            ):
+                continue
+
+            try:
+                message = json.loads(
+                    raw_message
+                )
+
+            except json.JSONDecodeError:
+                continue
+
+            event_type = str(
+                message.get(
+                    "type",
+                    "",
+                )
+            )
+
+            text = clean_text(
+                str(
+                    message.get(
+                        "text",
+                        "",
+                    )
+                )
+            )
+
+            # -----------------------------------------------------------------
+            # FIRST SERVER EVENT
+            # -----------------------------------------------------------------
+
+            if state.first_event_ns is None:
+
+                state.first_event_ns = (
+                    event_ns
+                )
+
+                state.first_event_type = (
+                    event_type
+                )
+
+            # -----------------------------------------------------------------
+            # FIRST TRANSCRIPTION
+            # -----------------------------------------------------------------
+
+            if event_type == "partial":
+
+                if (
+                    state.first_transcription_ns
+                    is None
+                ):
+
+                    state.first_transcription_ns = (
+                        event_ns
+                    )
+
+                    state.first_partial = (
+                        text
+                    )
+
+            elif event_type == "final":
+
+                if (
+                    state.first_transcription_ns
+                    is None
+                ):
+
+                    state.first_transcription_ns = (
+                        event_ns
+                    )
+
+                if state.first_final_ns is None:
+
+                    state.first_final_ns = (
+                        event_ns
+                    )
+
+                    state.first_final = (
+                        text
+                    )
+
+            elif event_type == "error":
+
+                print(
+                    f"[server error] "
+                    f"{text or message}"
+                )
+
+            elif event_type == "done":
+
+                state.done_event.set()
+
+                break
+
+    except ConnectionClosed as exc:
+
+        print(
+            "\n[warn] WebSocket closed: "
+            f"code={exc.code}, "
+            f"reason="
+            f"{exc.reason or 'none'}"
+        )
+
+    finally:
+
+        state.done_event.set()
+
+
+# =============================================================================
+# WEBSOCKET FILE
+# =============================================================================
+
+async def websocket_file_once(
     url,
     file_path,
     language,
     realtime,
 ):
-    """
-    Metrics:
-
-    Connection / startup
-        test start -> WebSocket handshake complete
-
-    Connection -> response
-        WebSocket connected -> first server event
-
-    Connection -> transcription
-        WebSocket connected -> first partial transcript
-
-    E2E TTFB
-        test start -> first server event
-
-    E2E TTFT/TTFA
-        test start -> first partial transcript
-
-    E2E TOTAL
-        test start -> server done / connection completion
-    """
-
     audio = load_wav_16khz_mono(
         file_path
     )
 
-    raw_bytes = audio.tobytes()
+    raw_bytes = (
+        audio.tobytes()
+    )
 
     chunks = [
         raw_bytes[
@@ -311,6 +614,16 @@ async def run_websocket_once(
         )
     ]
 
+    audio_duration = (
+        len(audio)
+        / SAMPLE_RATE
+    )
+
+    print(
+        f"[info] Audio duration: "
+        f"{audio_duration:.2f}s"
+    )
+
     # =========================================================================
     # E2E START
     # =========================================================================
@@ -318,28 +631,29 @@ async def run_websocket_once(
     e2e_start_ns = now_ns()
 
     # =========================================================================
-    # CONNECTION
+    # WEBSOCKET CONNECT
     # =========================================================================
 
-    connect_start_ns = now_ns()
+    connection_start_ns = (
+        now_ns()
+    )
 
     ws = await websockets.connect(
         url,
         ping_interval=20,
         ping_timeout=60,
-
-        # Cold Cloud Run startup may take time.
         open_timeout=240,
-
         close_timeout=10,
         max_size=None,
     )
 
     connected_ns = now_ns()
 
-    connection_startup_ms = elapsed_ms(
-        connect_start_ns,
-        connected_ns,
+    connection_startup_ms = (
+        elapsed_ms(
+            connection_start_ns,
+            connected_ns,
+        )
     )
 
     # =========================================================================
@@ -357,157 +671,24 @@ async def run_websocket_once(
     )
 
     # =========================================================================
-    # RECEIVE STATE
+    # RECEIVE TASK
     # =========================================================================
 
-    first_event_ns = None
-    first_partial_ns = None
-    first_final_ns = None
+    state = WSState(
+        done_event=asyncio.Event()
+    )
 
-    first_event_type = ""
-    first_partial_text = ""
-    first_final_text = ""
-
-    done_event = asyncio.Event()
-
-    # =========================================================================
-    # RECEIVER
-    # =========================================================================
-
-    async def receiver():
-
-        nonlocal first_event_ns
-        nonlocal first_partial_ns
-        nonlocal first_final_ns
-
-        nonlocal first_event_type
-        nonlocal first_partial_text
-        nonlocal first_final_text
-
-        try:
-
-            async for raw_message in ws:
-
-                event_ns = now_ns()
-
-                if isinstance(
-                    raw_message,
-                    bytes,
-                ):
-                    continue
-
-                try:
-                    msg = json.loads(
-                        raw_message
-                    )
-
-                except json.JSONDecodeError:
-                    continue
-
-                event_type = str(
-                    msg.get(
-                        "type",
-                        "",
-                    )
-                )
-
-                text = clean_text(
-                    str(
-                        msg.get(
-                            "text",
-                            "",
-                        )
-                    )
-                )
-
-                # -------------------------------------------------------------
-                # FIRST SERVER EVENT
-                # -------------------------------------------------------------
-
-                if first_event_ns is None:
-
-                    first_event_ns = (
-                        event_ns
-                    )
-
-                    first_event_type = (
-                        event_type
-                    )
-
-                # -------------------------------------------------------------
-                # FIRST PARTIAL
-                # -------------------------------------------------------------
-
-                if (
-                    event_type
-                    == "partial"
-                    and
-                    first_partial_ns
-                    is None
-                ):
-
-                    first_partial_ns = (
-                        event_ns
-                    )
-
-                    first_partial_text = (
-                        text
-                    )
-
-                # -------------------------------------------------------------
-                # FIRST FINAL
-                # -------------------------------------------------------------
-
-                if (
-                    event_type
-                    == "final"
-                    and
-                    first_final_ns
-                    is None
-                ):
-
-                    first_final_ns = (
-                        event_ns
-                    )
-
-                    first_final_text = (
-                        text
-                    )
-
-                # -------------------------------------------------------------
-                # DONE
-                # -------------------------------------------------------------
-
-                if event_type == "done":
-
-                    done_event.set()
-                    break
-
-                if event_type == "error":
-
-                    print(
-                        f"[server error] "
-                        f"{text or msg}"
-                    )
-
-        except ConnectionClosed as exc:
-
-            print(
-                "[warn] WebSocket closed: "
-                f"code={exc.code}, "
-                f"reason="
-                f"{exc.reason or 'none'}"
+    receiver_task = (
+        asyncio.create_task(
+            websocket_receiver(
+                ws,
+                state,
             )
-
-        finally:
-            done_event.set()
-
-    receive_task = asyncio.create_task(
-        receiver()
+        )
     )
 
     # =========================================================================
-    # STREAM AUDIO
+    # AUDIO STREAM
     # =========================================================================
 
     audio_start_ns = now_ns()
@@ -524,29 +705,26 @@ async def run_websocket_once(
 
             if realtime:
 
-                expected_elapsed = (
+                expected_seconds = (
                     (index + 1)
                     * CHUNK_MS
                     / 1000.0
                 )
 
-                actual_elapsed = (
-                    (
-                        now_ns()
-                        - audio_start_ns
-                    )
-                    / 1_000_000_000
+                actual_seconds = (
+                    now_ns()
+                    - audio_start_ns
+                ) / 1_000_000_000.0
+
+                sleep_seconds = (
+                    expected_seconds
+                    - actual_seconds
                 )
 
-                sleep_for = (
-                    expected_elapsed
-                    - actual_elapsed
-                )
-
-                if sleep_for > 0:
+                if sleep_seconds > 0:
 
                     await asyncio.sleep(
-                        sleep_for
+                        sleep_seconds
                     )
 
             else:
@@ -570,7 +748,7 @@ async def run_websocket_once(
         try:
 
             await asyncio.wait_for(
-                done_event.wait(),
+                state.done_event.wait(),
                 timeout=60,
             )
 
@@ -586,108 +764,440 @@ async def run_websocket_once(
         total_end_ns = now_ns()
 
         try:
+
             await ws.close()
 
         except Exception:
+
             pass
 
-        if not receive_task.done():
-            receive_task.cancel()
+        if not receiver_task.done():
+
+            receiver_task.cancel()
 
         try:
-            await receive_task
+
+            await receiver_task
 
         except asyncio.CancelledError:
+
             pass
 
-    # =========================================================================
-    # FALLBACK
-    # =========================================================================
-
-    # Some servers may not send partials.
-    # In that case use first final as transcription timing.
+    response_ns = (
+        state.first_event_ns
+        or
+        state.first_transcription_ns
+        or
+        total_end_ns
+    )
 
     transcription_ns = (
-        first_partial_ns
-        or first_final_ns
-        or total_end_ns
+        state.first_transcription_ns
+        or
+        state.first_final_ns
+        or
+        total_end_ns
     )
 
-    response_ns = (
-        first_event_ns
-        or transcription_ns
-    )
-
-    # =========================================================================
-    # METRIC CALCULATION
-    # =========================================================================
-
-    connection_response_ms = elapsed_ms(
-        connected_ns,
-        response_ns,
-    )
-
-    connection_transcription_ms = elapsed_ms(
-        connected_ns,
-        transcription_ns,
-    )
-
-    e2e_ttfb_ms = elapsed_ms(
-        e2e_start_ns,
-        response_ns,
-    )
-
-    e2e_ttft_ms = elapsed_ms(
-        e2e_start_ns,
-        transcription_ns,
-    )
-
-    e2e_total_ms = elapsed_ms(
-        e2e_start_ns,
-        total_end_ns,
-    )
-
-    return WebSocketResult(
+    return LatencyResult(
         connection_startup_ms=(
             connection_startup_ms
         ),
 
-        connection_response_ms=(
-            connection_response_ms
+        connection_response_ms=elapsed_ms(
+            connected_ns,
+            response_ns,
         ),
 
-        connection_transcription_ms=(
-            connection_transcription_ms
+        connection_transcription_ms=elapsed_ms(
+            connected_ns,
+            transcription_ns,
         ),
 
-        e2e_ttfb_ms=(
-            e2e_ttfb_ms
+        e2e_ttfb_ms=elapsed_ms(
+            e2e_start_ns,
+            response_ns,
         ),
 
-        e2e_ttft_ms=(
-            e2e_ttft_ms
+        e2e_ttft_ms=elapsed_ms(
+            e2e_start_ns,
+            transcription_ns,
         ),
 
-        e2e_total_ms=(
-            e2e_total_ms
+        e2e_total_ms=elapsed_ms(
+            e2e_start_ns,
+            total_end_ns,
         ),
 
         first_event_type=(
-            first_event_type
+            state.first_event_type
         ),
 
         first_partial=(
-            first_partial_text
+            state.first_partial
         ),
 
         first_final=(
-            first_final_text
+            state.first_final
         ),
     )
 
 
 # =============================================================================
-# MULTIPART BUILDER
+# WEBSOCKET MIC
+# =============================================================================
+
+async def websocket_mic_once(
+    url,
+    language,
+    duration,
+):
+    try:
+        import numpy as np
+        import sounddevice as sd
+
+    except ImportError:
+
+        raise RuntimeError(
+            "Mic mode requires:\n"
+            "py -3.11 -m pip install "
+            "numpy sounddevice"
+        )
+
+    # =========================================================================
+    # E2E START
+    # =========================================================================
+
+    e2e_start_ns = now_ns()
+
+    # =========================================================================
+    # CONNECT
+    # =========================================================================
+
+    connection_start_ns = (
+        now_ns()
+    )
+
+    ws = await websockets.connect(
+        url,
+        ping_interval=20,
+        ping_timeout=60,
+        open_timeout=240,
+        close_timeout=10,
+        max_size=None,
+    )
+
+    connected_ns = now_ns()
+
+    connection_startup_ms = (
+        elapsed_ms(
+            connection_start_ns,
+            connected_ns,
+        )
+    )
+
+    print(
+        f"[info] WebSocket connected "
+        f"in {connection_startup_ms:.2f} ms"
+    )
+
+    # =========================================================================
+    # CONFIG
+    # =========================================================================
+
+    await ws.send(
+        json.dumps(
+            {
+                "backend": "nemotron",
+                "sample_rate": SAMPLE_RATE,
+                "language": language,
+            }
+        )
+    )
+
+    # =========================================================================
+    # RECEIVER
+    # =========================================================================
+
+    state = WSState(
+        done_event=asyncio.Event()
+    )
+
+    receiver_task = (
+        asyncio.create_task(
+            websocket_receiver(
+                ws,
+                state,
+            )
+        )
+    )
+
+    # =========================================================================
+    # MIC
+    # =========================================================================
+
+    print(
+        "[info] START SPEAKING NOW"
+    )
+
+    event_loop = (
+        asyncio.get_running_loop()
+    )
+
+    audio_queue = (
+        asyncio.Queue(
+            maxsize=200
+        )
+    )
+
+    dropped_chunks = 0
+
+    def enqueue_audio(pcm):
+
+        nonlocal dropped_chunks
+
+        if audio_queue.full():
+
+            try:
+
+                audio_queue.get_nowait()
+
+                dropped_chunks += 1
+
+            except asyncio.QueueEmpty:
+
+                pass
+
+        try:
+
+            audio_queue.put_nowait(
+                pcm
+            )
+
+        except asyncio.QueueFull:
+
+            dropped_chunks += 1
+
+    def audio_callback(
+        indata,
+        frames,
+        time_info,
+        status,
+    ):
+
+        if status:
+
+            print(
+                f"\n[audio warning] "
+                f"{status}"
+            )
+
+        mono = np.clip(
+            indata[:, 0],
+            -1.0,
+            1.0,
+        )
+
+        pcm = (
+            mono
+            * 32767.0
+        ).astype(
+            np.int16
+        ).tobytes()
+
+        event_loop.call_soon_threadsafe(
+            enqueue_audio,
+            pcm,
+        )
+
+    mic_start_ns = now_ns()
+
+    try:
+
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=int(
+                SAMPLE_RATE
+                * CHUNK_MS
+                / 1000
+            ),
+            callback=audio_callback,
+        ):
+
+            while True:
+
+                elapsed_seconds = (
+                    now_ns()
+                    - mic_start_ns
+                ) / 1_000_000_000.0
+
+                if elapsed_seconds >= duration:
+                    break
+
+                if state.done_event.is_set():
+
+                    print(
+                        "[warn] Server ended "
+                        "connection early"
+                    )
+
+                    break
+
+                try:
+
+                    pcm = (
+                        await asyncio.wait_for(
+                            audio_queue.get(),
+                            timeout=0.5,
+                        )
+                    )
+
+                except asyncio.TimeoutError:
+
+                    continue
+
+                try:
+
+                    await ws.send(
+                        pcm
+                    )
+
+                except ConnectionClosed as exc:
+
+                    print(
+                        "[warn] Send failed: "
+                        f"code={exc.code}, "
+                        f"reason="
+                        f"{exc.reason or 'none'}"
+                    )
+
+                    break
+
+        try:
+
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "eof"
+                    }
+                )
+            )
+
+        except ConnectionClosed:
+
+            pass
+
+        try:
+
+            await asyncio.wait_for(
+                state.done_event.wait(),
+                timeout=30,
+            )
+
+        except asyncio.TimeoutError:
+
+            print(
+                "[warn] Timeout waiting "
+                "for final response"
+            )
+
+    finally:
+
+        total_end_ns = (
+            now_ns()
+        )
+
+        try:
+
+            await ws.close()
+
+        except Exception:
+
+            pass
+
+        if not receiver_task.done():
+
+            receiver_task.cancel()
+
+        try:
+
+            await receiver_task
+
+        except asyncio.CancelledError:
+
+            pass
+
+    if dropped_chunks:
+
+        print(
+            f"[warn] Dropped chunks: "
+            f"{dropped_chunks}"
+        )
+
+    response_ns = (
+        state.first_event_ns
+        or
+        state.first_transcription_ns
+        or
+        total_end_ns
+    )
+
+    transcription_ns = (
+        state.first_transcription_ns
+        or
+        state.first_final_ns
+        or
+        total_end_ns
+    )
+
+    return LatencyResult(
+        connection_startup_ms=(
+            connection_startup_ms
+        ),
+
+        connection_response_ms=elapsed_ms(
+            connected_ns,
+            response_ns,
+        ),
+
+        connection_transcription_ms=elapsed_ms(
+            connected_ns,
+            transcription_ns,
+        ),
+
+        e2e_ttfb_ms=elapsed_ms(
+            e2e_start_ns,
+            response_ns,
+        ),
+
+        e2e_ttft_ms=elapsed_ms(
+            e2e_start_ns,
+            transcription_ns,
+        ),
+
+        e2e_total_ms=elapsed_ms(
+            e2e_start_ns,
+            total_end_ns,
+        ),
+
+        first_event_type=(
+            state.first_event_type
+        ),
+
+        first_partial=(
+            state.first_partial
+        ),
+
+        first_final=(
+            state.first_final
+        ),
+    )
+
+
+# =============================================================================
+# MULTIPART BUILDER FOR OPENAI
 # =============================================================================
 
 def build_multipart_body(
@@ -724,33 +1234,29 @@ def build_multipart_body(
     body = bytearray()
 
     # -------------------------------------------------------------------------
-    # FORM FIELD
+    # FIELD
     # -------------------------------------------------------------------------
 
     def add_field(
-        field_name,
-        field_value,
+        name,
+        value,
     ):
 
         body.extend(
-            (
-                f"--{boundary}\r\n"
-            ).encode()
+            f"--{boundary}\r\n".encode()
         )
 
         body.extend(
             (
                 "Content-Disposition: "
                 "form-data; "
-                f'name="{field_name}"'
+                f'name="{name}"'
                 "\r\n\r\n"
             ).encode()
         )
 
         body.extend(
-            str(
-                field_value
-            ).encode()
+            str(value).encode()
         )
 
         body.extend(
@@ -777,16 +1283,13 @@ def build_multipart_body(
     # -------------------------------------------------------------------------
 
     body.extend(
-        (
-            f"--{boundary}\r\n"
-        ).encode()
+        f"--{boundary}\r\n".encode()
     )
 
     body.extend(
         (
             "Content-Disposition: "
-            "form-data; "
-            'name="file"; '
+            'form-data; name="file"; '
             f'filename="{path.name}"'
             "\r\n"
         ).encode()
@@ -809,9 +1312,7 @@ def build_multipart_body(
     )
 
     body.extend(
-        (
-            f"--{boundary}--\r\n"
-        ).encode()
+        f"--{boundary}--\r\n".encode()
     )
 
     return (
@@ -821,10 +1322,10 @@ def build_multipart_body(
 
 
 # =============================================================================
-# OPENAI-COMPATIBLE TEST
+# OPENAI REST TEST
 # =============================================================================
 
-def run_openai_once(
+def openai_once(
     endpoint,
     file_path,
     model,
@@ -833,25 +1334,20 @@ def run_openai_once(
     timeout,
 ):
     """
-    Metrics:
+    IMPORTANT:
 
-    Connection / startup
-        TCP + TLS connection
+    Timing starts AFTER microphone recording.
 
-    Connection -> response
-        established connection -> HTTP response headers
+    Therefore for OpenAI + mic:
 
-    Connection -> transcription
-        established connection -> complete transcription body
-
-    E2E TTFB
-        test start -> HTTP response headers
-
-    E2E TTFT/TTFA
-        test start -> complete transcription response
-
-    E2E TOTAL
-        test start -> response parsing complete
+        microphone recording
+             |
+             | NOT measured
+             v
+        HTTP test starts here
+             |
+             v
+        POST /v1/audio/transcriptions
     """
 
     path = Path(
@@ -862,16 +1358,14 @@ def run_openai_once(
 
         raise FileNotFoundError(
             f"File not found: "
-            f"{file_path}"
+            f"{path}"
         )
 
     parsed = urlparse(
         endpoint
     )
 
-    host = parsed.hostname
-
-    if not host:
+    if not parsed.hostname:
 
         raise ValueError(
             f"Invalid endpoint: "
@@ -890,6 +1384,11 @@ def run_openai_once(
             + parsed.query
         )
 
+    # Build body BEFORE latency starts.
+    #
+    # We don't want local file reading / multipart
+    # construction counted as Cloud Run latency.
+
     body, boundary = (
         build_multipart_body(
             file_path=path,
@@ -905,29 +1404,31 @@ def run_openai_once(
     # E2E START
     # =========================================================================
 
-    e2e_start_ns = now_ns()
+    e2e_start_ns = (
+        now_ns()
+    )
 
     # =========================================================================
-    # TCP / TLS CONNECTION
+    # TCP + TLS
     # =========================================================================
 
-    connection_start_ns = now_ns()
+    connection_start_ns = (
+        now_ns()
+    )
 
     if parsed.scheme == "https":
 
-        context = (
-            ssl.create_default_context()
-        )
-
         conn = (
             http.client.HTTPSConnection(
-                host,
+                parsed.hostname,
                 port=(
                     parsed.port
                     or 443
                 ),
                 timeout=timeout,
-                context=context,
+                context=(
+                    ssl.create_default_context()
+                ),
             )
         )
 
@@ -935,7 +1436,7 @@ def run_openai_once(
 
         conn = (
             http.client.HTTPConnection(
-                host,
+                parsed.hostname,
                 port=(
                     parsed.port
                     or 80
@@ -944,11 +1445,11 @@ def run_openai_once(
             )
         )
 
-    # Explicit connection so we can
-    # measure TCP/TLS separately.
     conn.connect()
 
-    connected_ns = now_ns()
+    connected_ns = (
+        now_ns()
+    )
 
     connection_startup_ms = (
         elapsed_ms(
@@ -958,7 +1459,7 @@ def run_openai_once(
     )
 
     # =========================================================================
-    # SEND REQUEST
+    # HTTP POST
     # =========================================================================
 
     conn.putrequest(
@@ -981,7 +1482,9 @@ def run_openai_once(
         ),
     )
 
-    # Avoid connection reuse.
+    # Disable connection reuse so each run
+    # performs its own TCP/TLS connection.
+
     conn.putheader(
         "Connection",
         "close",
@@ -994,7 +1497,7 @@ def run_openai_once(
     )
 
     # =========================================================================
-    # RESPONSE HEADERS = TTFB
+    # RESPONSE HEADERS
     # =========================================================================
 
     response = (
@@ -1006,7 +1509,7 @@ def run_openai_once(
     )
 
     # =========================================================================
-    # TRANSCRIPTION BODY
+    # RESPONSE BODY / TRANSCRIPTION
     # =========================================================================
 
     response_body = (
@@ -1016,10 +1519,6 @@ def run_openai_once(
     transcription_ns = (
         now_ns()
     )
-
-    # =========================================================================
-    # PARSE RESPONSE
-    # =========================================================================
 
     content_type = (
         response.getheader(
@@ -1040,11 +1539,10 @@ def run_openai_once(
 
         if (
             "application/json"
-            in
-            content_type.lower()
+            in content_type.lower()
         ):
 
-            parsed_response = (
+            response_json = (
                 json.loads(
                     text_response
                 )
@@ -1052,7 +1550,7 @@ def run_openai_once(
 
             formatted_response = (
                 json.dumps(
-                    parsed_response,
+                    response_json,
                     indent=2,
                     ensure_ascii=False,
                 )
@@ -1070,180 +1568,62 @@ def run_openai_once(
             text_response
         )
 
-    total_end_ns = now_ns()
-
-    # =========================================================================
-    # METRICS
-    # =========================================================================
-
-    connection_response_ms = (
-        elapsed_ms(
-            connected_ns,
-            response_headers_ns,
-        )
-    )
-
-    connection_transcription_ms = (
-        elapsed_ms(
-            connected_ns,
-            transcription_ns,
-        )
-    )
-
-    e2e_ttfb_ms = (
-        elapsed_ms(
-            e2e_start_ns,
-            response_headers_ns,
-        )
-    )
-
-    e2e_ttft_ms = (
-        elapsed_ms(
-            e2e_start_ns,
-            transcription_ns,
-        )
-    )
-
-    e2e_total_ms = (
-        elapsed_ms(
-            e2e_start_ns,
-            total_end_ns,
-        )
+    total_end_ns = (
+        now_ns()
     )
 
     status = (
         response.status
     )
 
-    conn.close()
-
-    return {
-        "connection_startup_ms": (
+    result = LatencyResult(
+        connection_startup_ms=(
             connection_startup_ms
         ),
 
-        "connection_response_ms": (
-            connection_response_ms
+        connection_response_ms=elapsed_ms(
+            connected_ns,
+            response_headers_ns,
         ),
 
-        "connection_transcription_ms": (
-            connection_transcription_ms
+        connection_transcription_ms=elapsed_ms(
+            connected_ns,
+            transcription_ns,
         ),
 
-        "e2e_ttfb_ms": (
-            e2e_ttfb_ms
+        e2e_ttfb_ms=elapsed_ms(
+            e2e_start_ns,
+            response_headers_ns,
         ),
 
-        "e2e_ttft_ms": (
-            e2e_ttft_ms
+        e2e_ttft_ms=elapsed_ms(
+            e2e_start_ns,
+            transcription_ns,
         ),
 
-        "e2e_total_ms": (
-            e2e_total_ms
+        e2e_total_ms=elapsed_ms(
+            e2e_start_ns,
+            total_end_ns,
         ),
-
-        "status": status,
-
-        "content_type": (
-            content_type
-        ),
-
-        "response": (
-            formatted_response
-        ),
-    }
-
-
-# =============================================================================
-# COLD VS WARM
-# =============================================================================
-
-def print_comparison(
-    cold,
-    warm,
-    mode,
-):
-    print()
-    print("=" * 80)
-    print(
-        f"{mode.upper()} "
-        "COLD VS WARM"
     )
-    print("=" * 80)
 
-    metrics = [
-        (
-            "Connection / startup",
-            "connection_startup_ms",
-        ),
-        (
-            "Connection -> response",
-            "connection_response_ms",
-        ),
-        (
-            "Connection -> transcription",
-            "connection_transcription_ms",
-        ),
-        (
-            "E2E TTFB",
-            "e2e_ttfb_ms",
-        ),
-        (
-            "E2E TTFT/TTFA",
-            "e2e_ttft_ms",
-        ),
-        (
-            "E2E TOTAL",
-            "e2e_total_ms",
-        ),
-    ]
+    conn.close()
 
-    for label, key in metrics:
-
-        if mode == "websocket":
-
-            cold_value = getattr(
-                cold,
-                key,
-            )
-
-            warm_value = getattr(
-                warm,
-                key,
-            )
-
-        else:
-
-            cold_value = cold[key]
-            warm_value = warm[key]
-
-        delta = (
-            cold_value
-            - warm_value
-        )
-
-        ratio = (
-            cold_value
-            / warm_value
-            if warm_value > 0
-            else 0
-        )
-
-        print(
-            f"{label:29}: "
-            f"cold={cold_value:.2f} ms | "
-            f"warm={warm_value:.2f} ms | "
-            f"delta={delta:.2f} ms | "
-            f"{ratio:.2f}x"
-        )
+    return (
+        result,
+        status,
+        content_type,
+        formatted_response,
+    )
 
 
 # =============================================================================
-# WEBSOCKET MULTI-RUN
+# WEBSOCKET TEST RUNNER
 # =============================================================================
 
-async def websocket_runs(args):
-
+async def run_websocket_tests(
+    args,
+):
     results = []
 
     for run_number in range(
@@ -1254,61 +1634,72 @@ async def websocket_runs(args):
         label = (
             "COLD-CANDIDATE"
             if run_number == 1
-            else "WARM"
+            else
+            "WARM"
         )
 
         print()
-        print(
-            f"[info] Starting "
-            f"WebSocket run "
-            f"{run_number}/{args.runs} "
-            f"[{label}]"
-        )
+        print("=" * 80)
 
-        result = (
-            await run_websocket_once(
-                url=args.url,
-                file_path=args.file,
-                language=args.language,
-                realtime=args.realtime,
+        if args.mic:
+
+            print(
+                f"WEBSOCKET MIC RUN "
+                f"{run_number} [{label}]"
             )
-        )
+
+        else:
+
+            print(
+                f"WEBSOCKET FILE RUN "
+                f"{run_number} [{label}]"
+            )
+
+        print("=" * 80)
+
+        if args.mic:
+
+            result = (
+                await websocket_mic_once(
+                    url=args.url,
+                    language=args.language,
+                    duration=args.duration,
+                )
+            )
+
+            title = (
+                "WEBSOCKET MIC LATENCY - "
+                f"RUN {run_number} "
+                f"[{label}]"
+            )
+
+        else:
+
+            result = (
+                await websocket_file_once(
+                    url=args.url,
+                    file_path=args.file,
+                    language=args.language,
+                    realtime=args.realtime,
+                )
+            )
+
+            title = (
+                "WEBSOCKET FILE LATENCY - "
+                f"RUN {run_number} "
+                f"[{label}]"
+            )
 
         results.append(
             result
         )
 
         print_latency(
-            title=(
-                f"WEBSOCKET LATENCY - "
-                f"RUN {run_number} "
-                f"[{label}]"
-            ),
-
-            connection_startup=(
-                result.connection_startup_ms
-            ),
-
-            connection_response=(
-                result.connection_response_ms
-            ),
-
-            connection_transcription=(
-                result.connection_transcription_ms
-            ),
-
-            e2e_ttfb=(
-                result.e2e_ttfb_ms
-            ),
-
-            e2e_ttft=(
-                result.e2e_ttft_ms
-            ),
-
-            e2e_total=(
-                result.e2e_total_ms
-            ),
+            title,
+            result,
         )
+
+        print()
 
         print(
             f"First server event          : "
@@ -1331,9 +1722,12 @@ async def websocket_runs(args):
 
         if run_number < args.runs:
 
+            print()
+
             print(
-                f"\n[info] Waiting "
-                f"{args.delay:.1f}s..."
+                f"[info] Waiting "
+                f"{args.delay:.1f}s before "
+                f"warm run..."
             )
 
             await asyncio.sleep(
@@ -1342,19 +1736,27 @@ async def websocket_runs(args):
 
     if len(results) >= 2:
 
+        title = (
+            "WEBSOCKET MIC COLD VS WARM"
+            if args.mic
+            else
+            "WEBSOCKET FILE COLD VS WARM"
+        )
+
         print_comparison(
             results[0],
             results[1],
-            "websocket",
+            title,
         )
 
 
 # =============================================================================
-# OPENAI MULTI-RUN
+# OPENAI TEST RUNNER
 # =============================================================================
 
-def openai_runs(args):
-
+def run_openai_tests(
+    args,
+):
     endpoint = (
         args.openai_url
         or
@@ -1378,99 +1780,151 @@ def openai_runs(args):
         label = (
             "COLD-CANDIDATE"
             if run_number == 1
-            else "WARM"
+            else
+            "WARM"
         )
 
-        print()
-        print(
-            f"[info] Starting "
-            f"OpenAI-compatible run "
-            f"{run_number}/{args.runs} "
-            f"[{label}]"
-        )
+        temp_mic_file = None
 
-        result = run_openai_once(
-            endpoint=endpoint,
-            file_path=args.file,
-            model=args.model,
-            language=args.language,
-            response_format=(
-                args.response_format
-            ),
-            timeout=args.timeout,
-        )
+        # =====================================================================
+        # MIC INPUT
+        # =====================================================================
 
-        results.append(
-            result
-        )
+        if args.mic:
 
-        print_latency(
-            title=(
-                "OPENAI COMPATIBLE LATENCY - "
-                f"RUN {run_number} "
-                f"[{label}]"
-            ),
+            print()
+            print("=" * 80)
+            print(
+                f"OPENAI MIC RUN "
+                f"{run_number} [{label}]"
+            )
+            print("=" * 80)
 
-            connection_startup=(
-                result[
-                    "connection_startup_ms"
-                ]
-            ),
+            temp_mic_file = (
+                record_microphone_to_wav(
+                    args.duration
+                )
+            )
 
-            connection_response=(
-                result[
-                    "connection_response_ms"
-                ]
-            ),
+            audio_file = (
+                temp_mic_file
+            )
 
-            connection_transcription=(
-                result[
-                    "connection_transcription_ms"
-                ]
-            ),
+        else:
 
-            e2e_ttfb=(
-                result[
-                    "e2e_ttfb_ms"
-                ]
-            ),
+            print()
+            print("=" * 80)
+            print(
+                f"OPENAI FILE RUN "
+                f"{run_number} [{label}]"
+            )
+            print("=" * 80)
 
-            e2e_ttft=(
-                result[
-                    "e2e_ttft_ms"
-                ]
-            ),
+            audio_file = (
+                args.file
+            )
 
-            e2e_total=(
-                result[
-                    "e2e_total_ms"
-                ]
-            ),
-        )
+        try:
 
-        print(
-            f"HTTP Status                 : "
-            f"{result['status']}"
-        )
+            # ================================================================
+            # HTTP TIMING STARTS INSIDE openai_once()
+            # ================================================================
 
-        print(
-            f"Content-Type                : "
-            f"{result['content_type']}"
-        )
+            (
+                result,
+                status,
+                content_type,
+                transcription,
+            ) = openai_once(
+                endpoint=endpoint,
+                file_path=audio_file,
+                model=args.model,
+                language=args.language,
+                response_format=(
+                    args.response_format
+                ),
+                timeout=args.timeout,
+            )
 
-        print()
-        print("TRANSCRIPTION")
-        print("-" * 80)
+            results.append(
+                result
+            )
 
-        print(
-            result["response"]
-        )
+            if args.mic:
+
+                title = (
+                    "OPENAI COMPATIBLE MIC LATENCY - "
+                    f"RUN {run_number} "
+                    f"[{label}]"
+                )
+
+            else:
+
+                title = (
+                    "OPENAI COMPATIBLE FILE LATENCY - "
+                    f"RUN {run_number} "
+                    f"[{label}]"
+                )
+
+            print_latency(
+                title,
+                result,
+            )
+
+            print()
+
+            print(
+                f"HTTP Status                 : "
+                f"{status}"
+            )
+
+            print(
+                f"Content-Type                : "
+                f"{content_type}"
+            )
+
+            print()
+
+            print("=" * 80)
+            print("TRANSCRIPTION")
+            print("=" * 80)
+
+            print(
+                transcription
+            )
+
+        finally:
+
+            # Delete temporary microphone WAV.
+            if (
+                temp_mic_file
+                and
+                os.path.exists(
+                    temp_mic_file
+                )
+            ):
+
+                try:
+
+                    os.remove(
+                        temp_mic_file
+                    )
+
+                except Exception as exc:
+
+                    print(
+                        f"[warn] Could not delete "
+                        f"temporary WAV: {exc}"
+                    )
 
         if run_number < args.runs:
 
+            print()
+
             print(
-                f"\n[info] Waiting "
-                f"{args.delay:.1f}s..."
+                f"[info] Waiting "
+                f"{args.delay:.1f}s before "
+                f"next run..."
             )
 
             time.sleep(
@@ -1479,25 +1933,35 @@ def openai_runs(args):
 
     if len(results) >= 2:
 
+        title = (
+            "OPENAI COMPATIBLE MIC COLD VS WARM"
+            if args.mic
+            else
+            "OPENAI COMPATIBLE FILE COLD VS WARM"
+        )
+
         print_comparison(
             results[0],
             results[1],
-            "openai",
+            title,
         )
 
 
 # =============================================================================
-# MAIN
+# CLI
 # =============================================================================
 
 def main():
-
     parser = argparse.ArgumentParser(
         description=(
-            "Python 3.11 Cloud Run cold-start "
-            "latency tester for Nemotron ASR"
+            "Python 3.11 Cloud Run "
+            "cold-start and ASR latency tester"
         )
     )
+
+    # =========================================================================
+    # API MODE
+    # =========================================================================
 
     parser.add_argument(
         "--mode",
@@ -1506,30 +1970,55 @@ def main():
             "websocket",
             "openai",
         ],
+        help=(
+            "websocket = realtime-custom-vad\n"
+            "openai = /v1/audio/transcriptions"
+        ),
     )
 
-    parser.add_argument(
-        "--file",
-        required=True,
-        help="Audio WAV file",
+    # =========================================================================
+    # AUDIO INPUT
+    # =========================================================================
+
+    input_group = (
+        parser.add_mutually_exclusive_group(
+            required=True
+        )
     )
+
+    input_group.add_argument(
+        "--file",
+        help="Audio file path",
+    )
+
+    input_group.add_argument(
+        "--mic",
+        action="store_true",
+        help="Use microphone",
+    )
+
+    # =========================================================================
+    # ENDPOINTS
+    # =========================================================================
 
     parser.add_argument(
         "--url",
         default=SERVER_URL,
-        help=(
-            "WebSocket endpoint"
-        ),
+        help="WebSocket endpoint",
     )
 
     parser.add_argument(
         "--openai-url",
         default=None,
         help=(
-            "Optional explicit "
+            "Explicit OpenAI-compatible "
             "/v1/audio/transcriptions URL"
         ),
     )
+
+    # =========================================================================
+    # ASR
+    # =========================================================================
 
     parser.add_argument(
         "--language",
@@ -1549,14 +2038,17 @@ def main():
         default="json",
     )
 
+    # =========================================================================
+    # TEST CONFIG
+    # =========================================================================
+
     parser.add_argument(
         "--runs",
         type=int,
-        default=2,
+        default=1,
         help=(
-            "Number of tests. "
-            "Run 1 = cold candidate; "
-            "Run 2+ = warm."
+            "1 = single test, "
+            "2 = cold candidate + warm comparison"
         ),
     )
 
@@ -1565,7 +2057,7 @@ def main():
         type=float,
         default=2.0,
         help=(
-            "Delay between test runs"
+            "Seconds between runs"
         ),
     )
 
@@ -1576,19 +2068,45 @@ def main():
     )
 
     parser.add_argument(
+        "--duration",
+        type=float,
+        default=10.0,
+        help=(
+            "Mic recording/streaming duration "
+            "in seconds"
+        ),
+    )
+
+    parser.add_argument(
         "--realtime",
         action="store_true",
         help=(
-            "Send WebSocket audio "
-            "at real-time speed"
+            "For WebSocket file mode, "
+            "stream WAV at realtime speed"
         ),
     )
 
     args = parser.parse_args()
 
+    # =========================================================================
+    # VALIDATION
+    # =========================================================================
+
+    if args.runs < 1:
+
+        parser.error(
+            "--runs must be >= 1"
+        )
+
+    if args.duration <= 0:
+
+        parser.error(
+            "--duration must be > 0"
+        )
+
     print()
     print("=" * 80)
-    print("CLOUD RUN COLD START TEST")
+    print("CLOUD RUN ASR LATENCY TEST")
     print("=" * 80)
 
     print(
@@ -1596,32 +2114,33 @@ def main():
         "will be sent."
     )
 
-    print(
-        "[info] Run 1 is treated as "
-        "COLD-CANDIDATE."
-    )
+    if args.runs >= 2:
 
-    print(
-        "[info] Run 2+ are immediate "
-        "WARM comparisons."
-    )
+        print(
+            "[info] Run 1 = "
+            "COLD-CANDIDATE"
+        )
 
-    print(
-        "[info] Make sure nothing has "
-        "called the service before Run 1."
-    )
+        print(
+            "[info] Run 2+ = "
+            "WARM"
+        )
+
+    # =========================================================================
+    # RUN
+    # =========================================================================
 
     if args.mode == "websocket":
 
         asyncio.run(
-            websocket_runs(
+            run_websocket_tests(
                 args
             )
         )
 
     else:
 
-        openai_runs(
+        run_openai_tests(
             args
         )
 
