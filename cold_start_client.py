@@ -2,10 +2,13 @@
 
 import argparse
 import asyncio
+import http.client
 import json
 import mimetypes
 import re
+import ssl
 import time
+import uuid
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,49 +18,51 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 
-# ============================================================
+# =============================================================================
 # CONFIG
-# ============================================================
+# =============================================================================
 
 SERVER_URL = (
-    "wss://nemotron-3-5-150916788856.us-central1.run.app/"
-    "asr/realtime-custom-vad"
+    "wss://nemotron-3-5-150916788856."
+    "us-central1.run.app/asr/realtime-custom-vad"
 )
 
 SAMPLE_RATE = 16000
 CHUNK_MS = 100
-CHUNK_BYTES = int(SAMPLE_RATE * CHUNK_MS / 1000) * 2
+CHUNK_BYTES = int(
+    SAMPLE_RATE * CHUNK_MS / 1000
+) * 2
 
-_LANG_TAG_RE = re.compile(r"<[a-z]{2}-[A-Z]{2}>\s*")
-
-
-# ============================================================
-# COMMON UTILITIES
-# ============================================================
-
-def now():
-    return time.perf_counter()
+_LANG_TAG_RE = re.compile(
+    r"<[a-z]{2}-[A-Z]{2}>\s*"
+)
 
 
-def elapsed_ms(start, end=None):
-    if end is None:
-        end = now()
+# =============================================================================
+# TIMER UTILITIES
+# =============================================================================
 
-    return (end - start) * 1000.0
+def now_ns():
+    return time.perf_counter_ns()
 
 
-def fmt(value):
-    if value is None:
-        return "N/A"
+def elapsed_ms(start_ns, end_ns=None):
+    if end_ns is None:
+        end_ns = now_ns()
 
-    return f"{value:.2f} ms"
+    return (
+        end_ns - start_ns
+    ) / 1_000_000.0
 
 
 def clean_text(text):
-    return _LANG_TAG_RE.sub("", text or "").strip()
+    return _LANG_TAG_RE.sub(
+        "",
+        text or "",
+    ).strip()
 
 
-def get_http_base(ws_url):
+def ws_to_openai_url(ws_url):
     parsed = urlparse(ws_url)
 
     if parsed.scheme == "wss":
@@ -67,42 +72,91 @@ def get_http_base(ws_url):
     else:
         scheme = parsed.scheme
 
-    return f"{scheme}://{parsed.netloc}"
-
-
-def get_openai_url(ws_url):
     return (
-        f"{get_http_base(ws_url)}"
+        f"{scheme}://{parsed.netloc}"
         "/v1/audio/transcriptions"
     )
 
 
-# ============================================================
-# WAV LOADING FOR WEBSOCKET
-# ============================================================
+# =============================================================================
+# OUTPUT
+# =============================================================================
 
-def load_wav_16khz_mono(path):
+def print_latency(
+    title,
+    connection_startup,
+    connection_response,
+    connection_transcription,
+    e2e_ttfb,
+    e2e_ttft,
+    e2e_total,
+):
+    print()
+    print("=" * 80)
+    print(title)
+    print("=" * 80)
+
+    print(
+        f"Connection / startup       : "
+        f"{connection_startup:.2f} ms"
+    )
+
+    print(
+        f"Connection -> response     : "
+        f"{connection_response:.2f} ms"
+    )
+
+    print(
+        f"Connection -> transcription: "
+        f"{connection_transcription:.2f} ms"
+    )
+
+    print(
+        f"E2E TTFB                   : "
+        f"{e2e_ttfb:.2f} ms"
+    )
+
+    print(
+        f"E2E TTFT/TTFA              : "
+        f"{e2e_ttft:.2f} ms"
+    )
+
+    print(
+        f"E2E TOTAL                  : "
+        f"{e2e_total:.2f} ms"
+    )
+
+
+# =============================================================================
+# WAV LOADING
+# =============================================================================
+
+def load_wav_16khz_mono(file_path):
     import numpy as np
 
-    path = Path(path)
+    path = Path(file_path)
 
     if not path.exists():
         raise FileNotFoundError(
-            f"File not found: {path}"
+            f"File not found: {file_path}"
         )
 
-    with wave.open(str(path), "rb") as wf:
+    with wave.open(
+        str(path),
+        "rb",
+    ) as wf:
+
         channels = wf.getnchannels()
         sample_width = wf.getsampwidth()
         sample_rate = wf.getframerate()
-        nframes = wf.getnframes()
+        frames = wf.getnframes()
 
-        raw = wf.readframes(nframes)
+        raw = wf.readframes(frames)
 
     if sample_width != 2:
         raise ValueError(
-            "WebSocket test requires "
-            "16-bit PCM WAV."
+            "WebSocket mode currently requires "
+            "16-bit PCM WAV input."
         )
 
     audio = np.frombuffer(
@@ -110,27 +164,51 @@ def load_wav_16khz_mono(path):
         dtype=np.int16,
     )
 
-    # Convert stereo/multichannel to mono
+    # -------------------------------------------------------------------------
+    # Stereo -> mono
+    # -------------------------------------------------------------------------
+
     if channels > 1:
+
         usable = (
             len(audio)
-            - (len(audio) % channels)
+            - (
+                len(audio)
+                % channels
+            )
         )
 
         audio = (
             audio[:usable]
-            .reshape(-1, channels)
-            .astype(np.float32)
-            .mean(axis=1)
-            .clip(-32768, 32767)
-            .astype(np.int16)
+            .reshape(
+                -1,
+                channels,
+            )
+            .astype(
+                np.float32
+            )
+            .mean(
+                axis=1
+            )
+            .clip(
+                -32768,
+                32767,
+            )
+            .astype(
+                np.int16
+            )
         )
 
-    # Resample if required
+    # -------------------------------------------------------------------------
+    # Resample -> 16 kHz
+    # -------------------------------------------------------------------------
+
     if sample_rate != SAMPLE_RATE:
+
         print(
             f"[info] Resampling "
-            f"{sample_rate}Hz -> {SAMPLE_RATE}Hz"
+            f"{sample_rate}Hz -> "
+            f"{SAMPLE_RATE}Hz"
         )
 
         try:
@@ -143,7 +221,9 @@ def load_wav_16khz_mono(path):
             )
 
         audio_f32 = (
-            audio.astype(np.float32)
+            audio.astype(
+                np.float32
+            )
             / 32768.0
         )
 
@@ -154,46 +234,65 @@ def load_wav_16khz_mono(path):
         )
 
         audio = (
-            audio_f32.clip(-1.0, 1.0)
-            * 32767.0
-        ).astype(np.int16)
+            np.clip(
+                audio_f32,
+                -1.0,
+                1.0,
+            )
+            * 32767
+        ).astype(
+            np.int16
+        )
 
     return audio
 
 
-# ============================================================
-# WEBSOCKET COLD START METRICS
-# ============================================================
+# =============================================================================
+# WEBSOCKET METRICS
+# =============================================================================
 
 @dataclass
-class WebSocketMetrics:
-    connect_ms: float | None = None
+class WebSocketResult:
+    connection_startup_ms: float
+    connection_response_ms: float
+    connection_transcription_ms: float
+    e2e_ttfb_ms: float
+    e2e_ttft_ms: float
+    e2e_total_ms: float
 
-    config_send_ms: float | None = None
-
-    first_audio_from_start_ms: float | None = None
-
-    first_event_from_start_ms: float | None = None
-    first_event_from_audio_ms: float | None = None
-
-    first_partial_from_start_ms: float | None = None
-    first_partial_from_audio_ms: float | None = None
-
-    first_final_from_start_ms: float | None = None
-    first_final_from_audio_ms: float | None = None
-
-    total_ms: float | None = None
-
-    first_partial_text: str = ""
-    first_final_text: str = ""
+    first_event_type: str = ""
+    first_partial: str = ""
+    first_final: str = ""
 
 
-async def websocket_test_once(
+async def run_websocket_once(
     url,
     file_path,
     language,
-    realtime=True,
+    realtime,
 ):
+    """
+    Metrics:
+
+    Connection / startup
+        test start -> WebSocket handshake complete
+
+    Connection -> response
+        WebSocket connected -> first server event
+
+    Connection -> transcription
+        WebSocket connected -> first partial transcript
+
+    E2E TTFB
+        test start -> first server event
+
+    E2E TTFT/TTFA
+        test start -> first partial transcript
+
+    E2E TOTAL
+        test start -> server done / connection completion
+    """
+
     audio = load_wav_16khz_mono(
         file_path
     )
@@ -202,56 +301,50 @@ async def websocket_test_once(
 
     chunks = [
         raw_bytes[
-            i:i + CHUNK_BYTES
+            index:
+            index + CHUNK_BYTES
         ]
-        for i in range(
+        for index in range(
             0,
             len(raw_bytes),
             CHUNK_BYTES,
         )
     ]
 
-    metrics = WebSocketMetrics()
+    # =========================================================================
+    # E2E START
+    # =========================================================================
 
-    # --------------------------------------------------------
-    # VERY IMPORTANT:
-    #
-    # This is BEFORE websockets.connect().
-    #
-    # Therefore a true cold Cloud Run instance startup
-    # should show up mainly in connect_ms.
-    # --------------------------------------------------------
+    e2e_start_ns = now_ns()
 
-    request_start = now()
+    # =========================================================================
+    # CONNECTION
+    # =========================================================================
 
-    connect_start = now()
+    connect_start_ns = now_ns()
 
     ws = await websockets.connect(
         url,
-
-        # Keepalive
         ping_interval=20,
         ping_timeout=60,
 
-        # Cold GPU/model startup may be slow
+        # Cold Cloud Run startup may take time.
         open_timeout=240,
 
         close_timeout=10,
         max_size=None,
     )
 
-    connected_at = now()
+    connected_ns = now_ns()
 
-    metrics.connect_ms = elapsed_ms(
-        connect_start,
-        connected_at,
+    connection_startup_ms = elapsed_ms(
+        connect_start_ns,
+        connected_ns,
     )
 
-    # --------------------------------------------------------
-    # SEND INITIAL CONFIG
-    # --------------------------------------------------------
-
-    config_start = now()
+    # =========================================================================
+    # CONFIG
+    # =========================================================================
 
     await ws.send(
         json.dumps(
@@ -263,37 +356,59 @@ async def websocket_test_once(
         )
     )
 
-    metrics.config_send_ms = elapsed_ms(
-        config_start
-    )
+    # =========================================================================
+    # RECEIVE STATE
+    # =========================================================================
 
-    first_audio_time = None
+    first_event_ns = None
+    first_partial_ns = None
+    first_final_ns = None
+
+    first_event_type = ""
+    first_partial_text = ""
+    first_final_text = ""
 
     done_event = asyncio.Event()
 
-    # --------------------------------------------------------
-    # RECEIVE LOOP
-    # --------------------------------------------------------
+    # =========================================================================
+    # RECEIVER
+    # =========================================================================
 
     async def receiver():
 
-        try:
-            async for raw in ws:
+        nonlocal first_event_ns
+        nonlocal first_partial_ns
+        nonlocal first_final_ns
 
-                if isinstance(raw, bytes):
+        nonlocal first_event_type
+        nonlocal first_partial_text
+        nonlocal first_final_text
+
+        try:
+
+            async for raw_message in ws:
+
+                event_ns = now_ns()
+
+                if isinstance(
+                    raw_message,
+                    bytes,
+                ):
                     continue
 
-                event_time = now()
-
                 try:
-                    msg = json.loads(raw)
+                    msg = json.loads(
+                        raw_message
+                    )
 
                 except json.JSONDecodeError:
                     continue
 
-                event_type = msg.get(
-                    "type",
-                    "",
+                event_type = str(
+                    msg.get(
+                        "type",
+                        "",
+                    )
                 )
 
                 text = clean_text(
@@ -305,91 +420,84 @@ async def websocket_test_once(
                     )
                 )
 
-                # --------------------------------------------
+                # -------------------------------------------------------------
                 # FIRST SERVER EVENT
-                # --------------------------------------------
+                # -------------------------------------------------------------
 
-                if (
-                    metrics.first_event_from_start_ms
-                    is None
-                ):
-                    metrics.first_event_from_start_ms = (
-                        elapsed_ms(
-                            request_start,
-                            event_time,
-                        )
+                if first_event_ns is None:
+
+                    first_event_ns = (
+                        event_ns
                     )
 
-                    if first_audio_time is not None:
-                        metrics.first_event_from_audio_ms = (
-                            elapsed_ms(
-                                first_audio_time,
-                                event_time,
-                            )
-                        )
+                    first_event_type = (
+                        event_type
+                    )
 
-                # --------------------------------------------
+                # -------------------------------------------------------------
                 # FIRST PARTIAL
-                # --------------------------------------------
+                # -------------------------------------------------------------
 
                 if (
-                    event_type == "partial"
+                    event_type
+                    == "partial"
                     and
-                    metrics.first_partial_from_start_ms
+                    first_partial_ns
                     is None
                 ):
 
-                    metrics.first_partial_from_start_ms = (
-                        elapsed_ms(
-                            request_start,
-                            event_time,
-                        )
+                    first_partial_ns = (
+                        event_ns
                     )
 
-                    if first_audio_time is not None:
-                        metrics.first_partial_from_audio_ms = (
-                            elapsed_ms(
-                                first_audio_time,
-                                event_time,
-                            )
-                        )
+                    first_partial_text = (
+                        text
+                    )
 
-                    metrics.first_partial_text = text
-
-                # --------------------------------------------
+                # -------------------------------------------------------------
                 # FIRST FINAL
-                # --------------------------------------------
+                # -------------------------------------------------------------
 
                 if (
-                    event_type == "final"
+                    event_type
+                    == "final"
                     and
-                    metrics.first_final_from_start_ms
+                    first_final_ns
                     is None
                 ):
 
-                    metrics.first_final_from_start_ms = (
-                        elapsed_ms(
-                            request_start,
-                            event_time,
-                        )
+                    first_final_ns = (
+                        event_ns
                     )
 
-                    if first_audio_time is not None:
-                        metrics.first_final_from_audio_ms = (
-                            elapsed_ms(
-                                first_audio_time,
-                                event_time,
-                            )
-                        )
+                    first_final_text = (
+                        text
+                    )
 
-                    metrics.first_final_text = text
+                # -------------------------------------------------------------
+                # DONE
+                # -------------------------------------------------------------
 
                 if event_type == "done":
+
                     done_event.set()
                     break
 
-        except ConnectionClosed:
-            done_event.set()
+                if event_type == "error":
+
+                    print(
+                        f"[server error] "
+                        f"{text or msg}"
+                    )
+
+        except ConnectionClosed as exc:
+
+            print(
+                "[warn] WebSocket closed: "
+                f"code={exc.code}, "
+                f"reason="
+                f"{exc.reason or 'none'}"
+            )
 
         finally:
             done_event.set()
@@ -398,11 +506,11 @@ async def websocket_test_once(
         receiver()
     )
 
-    # --------------------------------------------------------
-    # SEND AUDIO
-    # --------------------------------------------------------
+    # =========================================================================
+    # STREAM AUDIO
+    # =========================================================================
 
-    audio_stream_start = now()
+    audio_start_ns = now_ns()
 
     try:
 
@@ -410,20 +518,9 @@ async def websocket_test_once(
             chunks
         ):
 
-            send_time = now()
-
-            await ws.send(chunk)
-
-            if first_audio_time is None:
-
-                first_audio_time = send_time
-
-                metrics.first_audio_from_start_ms = (
-                    elapsed_ms(
-                        request_start,
-                        send_time,
-                    )
-                )
+            await ws.send(
+                chunk
+            )
 
             if realtime:
 
@@ -434,26 +531,34 @@ async def websocket_test_once(
                 )
 
                 actual_elapsed = (
-                    now()
-                    - audio_stream_start
+                    (
+                        now_ns()
+                        - audio_start_ns
+                    )
+                    / 1_000_000_000
                 )
 
-                sleep_time = (
+                sleep_for = (
                     expected_elapsed
                     - actual_elapsed
                 )
 
-                if sleep_time > 0:
+                if sleep_for > 0:
+
                     await asyncio.sleep(
-                        sleep_time
+                        sleep_for
                     )
 
             else:
+
                 await asyncio.sleep(
                     0.001
                 )
 
-        # Flush ASR
+        # ---------------------------------------------------------------------
+        # EOF
+        # ---------------------------------------------------------------------
+
         await ws.send(
             json.dumps(
                 {
@@ -463,21 +568,26 @@ async def websocket_test_once(
         )
 
         try:
+
             await asyncio.wait_for(
                 done_event.wait(),
                 timeout=60,
             )
 
         except asyncio.TimeoutError:
+
             print(
                 "[warn] Timeout waiting "
-                "for done"
+                "for server done"
             )
 
     finally:
 
+        total_end_ns = now_ns()
+
         try:
             await ws.close()
+
         except Exception:
             pass
 
@@ -486,102 +596,235 @@ async def websocket_test_once(
 
         try:
             await receive_task
+
         except asyncio.CancelledError:
             pass
 
-    metrics.total_ms = elapsed_ms(
-        request_start
+    # =========================================================================
+    # FALLBACK
+    # =========================================================================
+
+    # Some servers may not send partials.
+    # In that case use first final as transcription timing.
+
+    transcription_ns = (
+        first_partial_ns
+        or first_final_ns
+        or total_end_ns
     )
 
-    return metrics
+    response_ns = (
+        first_event_ns
+        or transcription_ns
+    )
+
+    # =========================================================================
+    # METRIC CALCULATION
+    # =========================================================================
+
+    connection_response_ms = elapsed_ms(
+        connected_ns,
+        response_ns,
+    )
+
+    connection_transcription_ms = elapsed_ms(
+        connected_ns,
+        transcription_ns,
+    )
+
+    e2e_ttfb_ms = elapsed_ms(
+        e2e_start_ns,
+        response_ns,
+    )
+
+    e2e_ttft_ms = elapsed_ms(
+        e2e_start_ns,
+        transcription_ns,
+    )
+
+    e2e_total_ms = elapsed_ms(
+        e2e_start_ns,
+        total_end_ns,
+    )
+
+    return WebSocketResult(
+        connection_startup_ms=(
+            connection_startup_ms
+        ),
+
+        connection_response_ms=(
+            connection_response_ms
+        ),
+
+        connection_transcription_ms=(
+            connection_transcription_ms
+        ),
+
+        e2e_ttfb_ms=(
+            e2e_ttfb_ms
+        ),
+
+        e2e_ttft_ms=(
+            e2e_ttft_ms
+        ),
+
+        e2e_total_ms=(
+            e2e_total_ms
+        ),
+
+        first_event_type=(
+            first_event_type
+        ),
+
+        first_partial=(
+            first_partial_text
+        ),
+
+        first_final=(
+            first_final_text
+        ),
+    )
 
 
-def print_websocket_metrics(
-    run_number,
-    label,
-    m,
+# =============================================================================
+# MULTIPART BUILDER
+# =============================================================================
+
+def build_multipart_body(
+    file_path,
+    model,
+    language,
+    response_format,
 ):
-    print()
-    print("=" * 80)
-    print(
-        f"WEBSOCKET RUN {run_number} "
-        f"- {label}"
-    )
-    print("=" * 80)
-
-    print(
-        f"WS CONNECT / HANDSHAKE     : "
-        f"{fmt(m.connect_ms)}"
+    path = Path(
+        file_path
     )
 
-    print(
-        f"Config send                : "
-        f"{fmt(m.config_send_ms)}"
+    boundary = (
+        "----NemotronBoundary"
+        + uuid.uuid4().hex
     )
 
-    print(
-        f"First audio sent @         : "
-        f"{fmt(m.first_audio_from_start_ms)}"
+    mime_type = (
+        mimetypes.guess_type(
+            path.name
+        )[0]
+        or
+        "application/octet-stream"
     )
 
-    print(
-        f"First server event         : "
-        f"{fmt(m.first_event_from_start_ms)} "
-        "from connection start"
-    )
+    with path.open(
+        "rb"
+    ) as audio_file:
 
-    print(
-        f"First server event         : "
-        f"{fmt(m.first_event_from_audio_ms)} "
-        "from first audio"
-    )
-
-    print(
-        f"FIRST PARTIAL              : "
-        f"{fmt(m.first_partial_from_start_ms)} "
-        "from connection start"
-    )
-
-    print(
-        f"FIRST PARTIAL / TTFT       : "
-        f"{fmt(m.first_partial_from_audio_ms)} "
-        "from first audio"
-    )
-
-    print(
-        f"FIRST FINAL                : "
-        f"{fmt(m.first_final_from_start_ms)} "
-        "from connection start"
-    )
-
-    print(
-        f"FIRST FINAL FROM AUDIO     : "
-        f"{fmt(m.first_final_from_audio_ms)}"
-    )
-
-    print(
-        f"TOTAL                      : "
-        f"{fmt(m.total_ms)}"
-    )
-
-    if m.first_partial_text:
-        print(
-            "First partial text         : "
-            f"{m.first_partial_text}"
+        file_bytes = (
+            audio_file.read()
         )
 
-    if m.first_final_text:
-        print(
-            "First final text           : "
-            f"{m.first_final_text}"
+    body = bytearray()
+
+    # -------------------------------------------------------------------------
+    # FORM FIELD
+    # -------------------------------------------------------------------------
+
+    def add_field(
+        field_name,
+        field_value,
+    ):
+
+        body.extend(
+            (
+                f"--{boundary}\r\n"
+            ).encode()
         )
 
+        body.extend(
+            (
+                "Content-Disposition: "
+                "form-data; "
+                f'name="{field_name}"'
+                "\r\n\r\n"
+            ).encode()
+        )
 
-# ============================================================
-# OPENAI-COMPATIBLE COLD START
-# ============================================================
+        body.extend(
+            str(
+                field_value
+            ).encode()
+        )
 
-def openai_test_once(
+        body.extend(
+            b"\r\n"
+        )
+
+    add_field(
+        "model",
+        model,
+    )
+
+    add_field(
+        "language",
+        language,
+    )
+
+    add_field(
+        "response_format",
+        response_format,
+    )
+
+    # -------------------------------------------------------------------------
+    # FILE
+    # -------------------------------------------------------------------------
+
+    body.extend(
+        (
+            f"--{boundary}\r\n"
+        ).encode()
+    )
+
+    body.extend(
+        (
+            "Content-Disposition: "
+            "form-data; "
+            'name="file"; '
+            f'filename="{path.name}"'
+            "\r\n"
+        ).encode()
+    )
+
+    body.extend(
+        (
+            f"Content-Type: "
+            f"{mime_type}"
+            "\r\n\r\n"
+        ).encode()
+    )
+
+    body.extend(
+        file_bytes
+    )
+
+    body.extend(
+        b"\r\n"
+    )
+
+    body.extend(
+        (
+            f"--{boundary}--\r\n"
+        ).encode()
+    )
+
+    return (
+        bytes(body),
+        boundary,
+    )
+
+
+# =============================================================================
+# OPENAI-COMPATIBLE TEST
+# =============================================================================
+
+def run_openai_once(
     endpoint,
     file_path,
     model,
@@ -589,227 +832,508 @@ def openai_test_once(
     response_format,
     timeout,
 ):
-    try:
-        import requests
+    """
+    Metrics:
 
-    except ImportError:
-        raise RuntimeError(
-            "Install requests:\n"
-            "py -3.11 -m pip install requests"
-        )
+    Connection / startup
+        TCP + TLS connection
 
-    path = Path(file_path)
+    Connection -> response
+        established connection -> HTTP response headers
 
-    if not path.exists():
-        raise FileNotFoundError(path)
+    Connection -> transcription
+        established connection -> complete transcription body
 
-    mime_type = (
-        mimetypes.guess_type(
-            path.name
-        )[0]
-        or "application/octet-stream"
+    E2E TTFB
+        test start -> HTTP response headers
+
+    E2E TTFT/TTFA
+        test start -> complete transcription response
+
+    E2E TOTAL
+        test start -> response parsing complete
+    """
+
+    path = Path(
+        file_path
     )
 
-    # --------------------------------------------------------
-    # START BEFORE TCP/TLS/HTTP/CLOUD RUN
-    # --------------------------------------------------------
+    if not path.exists():
 
-    request_start = now()
-
-    with path.open("rb") as audio_file:
-
-        response = requests.post(
-            endpoint,
-
-            data={
-                "model": model,
-                "language": language,
-                "response_format": (
-                    response_format
-                ),
-            },
-
-            files={
-                "file": (
-                    path.name,
-                    audio_file,
-                    mime_type,
-                )
-            },
-
-            # Do not reuse HTTP connection between
-            # cold/warm tests.
-            headers={
-                "Connection": "close"
-            },
-
-            timeout=timeout,
-
-            # Return once headers arrive.
-            stream=True,
+        raise FileNotFoundError(
+            f"File not found: "
+            f"{file_path}"
         )
 
-        headers_received = now()
+    parsed = urlparse(
+        endpoint
+    )
 
-        # Force body download
-        body = response.content
+    host = parsed.hostname
 
-        body_received = now()
+    if not host:
+
+        raise ValueError(
+            f"Invalid endpoint: "
+            f"{endpoint}"
+        )
+
+    request_path = (
+        parsed.path
+        or "/"
+    )
+
+    if parsed.query:
+
+        request_path += (
+            "?"
+            + parsed.query
+        )
+
+    body, boundary = (
+        build_multipart_body(
+            file_path=path,
+            model=model,
+            language=language,
+            response_format=(
+                response_format
+            ),
+        )
+    )
+
+    # =========================================================================
+    # E2E START
+    # =========================================================================
+
+    e2e_start_ns = now_ns()
+
+    # =========================================================================
+    # TCP / TLS CONNECTION
+    # =========================================================================
+
+    connection_start_ns = now_ns()
+
+    if parsed.scheme == "https":
+
+        context = (
+            ssl.create_default_context()
+        )
+
+        conn = (
+            http.client.HTTPSConnection(
+                host,
+                port=(
+                    parsed.port
+                    or 443
+                ),
+                timeout=timeout,
+                context=context,
+            )
+        )
+
+    else:
+
+        conn = (
+            http.client.HTTPConnection(
+                host,
+                port=(
+                    parsed.port
+                    or 80
+                ),
+                timeout=timeout,
+            )
+        )
+
+    # Explicit connection so we can
+    # measure TCP/TLS separately.
+    conn.connect()
+
+    connected_ns = now_ns()
+
+    connection_startup_ms = (
+        elapsed_ms(
+            connection_start_ns,
+            connected_ns,
+        )
+    )
+
+    # =========================================================================
+    # SEND REQUEST
+    # =========================================================================
+
+    conn.putrequest(
+        "POST",
+        request_path,
+    )
+
+    conn.putheader(
+        "Content-Type",
+        (
+            "multipart/form-data; "
+            f"boundary={boundary}"
+        ),
+    )
+
+    conn.putheader(
+        "Content-Length",
+        str(
+            len(body)
+        ),
+    )
+
+    # Avoid connection reuse.
+    conn.putheader(
+        "Connection",
+        "close",
+    )
+
+    conn.endheaders()
+
+    conn.send(
+        body
+    )
+
+    # =========================================================================
+    # RESPONSE HEADERS = TTFB
+    # =========================================================================
+
+    response = (
+        conn.getresponse()
+    )
+
+    response_headers_ns = (
+        now_ns()
+    )
+
+    # =========================================================================
+    # TRANSCRIPTION BODY
+    # =========================================================================
+
+    response_body = (
+        response.read()
+    )
+
+    transcription_ns = (
+        now_ns()
+    )
+
+    # =========================================================================
+    # PARSE RESPONSE
+    # =========================================================================
+
+    content_type = (
+        response.getheader(
+            "Content-Type",
+            "",
+        )
+        or ""
+    )
+
+    text_response = (
+        response_body.decode(
+            "utf-8",
+            errors="replace",
+        )
+    )
+
+    try:
+
+        if (
+            "application/json"
+            in
+            content_type.lower()
+        ):
+
+            parsed_response = (
+                json.loads(
+                    text_response
+                )
+            )
+
+            formatted_response = (
+                json.dumps(
+                    parsed_response,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+
+        else:
+
+            formatted_response = (
+                text_response
+            )
+
+    except Exception:
+
+        formatted_response = (
+            text_response
+        )
+
+    total_end_ns = now_ns()
+
+    # =========================================================================
+    # METRICS
+    # =========================================================================
+
+    connection_response_ms = (
+        elapsed_ms(
+            connected_ns,
+            response_headers_ns,
+        )
+    )
+
+    connection_transcription_ms = (
+        elapsed_ms(
+            connected_ns,
+            transcription_ns,
+        )
+    )
+
+    e2e_ttfb_ms = (
+        elapsed_ms(
+            e2e_start_ns,
+            response_headers_ns,
+        )
+    )
+
+    e2e_ttft_ms = (
+        elapsed_ms(
+            e2e_start_ns,
+            transcription_ns,
+        )
+    )
+
+    e2e_total_ms = (
+        elapsed_ms(
+            e2e_start_ns,
+            total_end_ns,
+        )
+    )
+
+    status = (
+        response.status
+    )
+
+    conn.close()
 
     return {
-        "status": response.status_code,
-
-        # Includes:
-        #
-        # DNS/TCP/TLS +
-        # Cloud Run routing +
-        # container cold start +
-        # app/model initialization +
-        # ASR processing until response
-        "headers_ms": elapsed_ms(
-            request_start,
-            headers_received,
+        "connection_startup_ms": (
+            connection_startup_ms
         ),
 
-        "body_ms": elapsed_ms(
-            headers_received,
-            body_received,
+        "connection_response_ms": (
+            connection_response_ms
         ),
 
-        "total_ms": elapsed_ms(
-            request_start,
-            body_received,
+        "connection_transcription_ms": (
+            connection_transcription_ms
         ),
+
+        "e2e_ttfb_ms": (
+            e2e_ttfb_ms
+        ),
+
+        "e2e_ttft_ms": (
+            e2e_ttft_ms
+        ),
+
+        "e2e_total_ms": (
+            e2e_total_ms
+        ),
+
+        "status": status,
 
         "content_type": (
-            response.headers.get(
-                "content-type",
-                "",
-            )
+            content_type
         ),
 
-        "body": body.decode(
-            response.encoding or "utf-8",
-            errors="replace",
+        "response": (
+            formatted_response
         ),
     }
 
 
-def print_openai_metrics(
-    run_number,
-    label,
-    result,
-):
-    print()
-    print("=" * 80)
+# =============================================================================
+# COLD VS WARM
+# =============================================================================
 
-    print(
-        f"OPENAI-COMPATIBLE RUN "
-        f"{run_number} - {label}"
-    )
-
-    print("=" * 80)
-
-    print(
-        f"HTTP status                : "
-        f"{result['status']}"
-    )
-
-    print(
-        f"TIME TO RESPONSE HEADERS   : "
-        f"{result['headers_ms']:.2f} ms"
-    )
-
-    print(
-        f"Response body read         : "
-        f"{result['body_ms']:.2f} ms"
-    )
-
-    print(
-        f"TOTAL REST LATENCY         : "
-        f"{result['total_ms']:.2f} ms"
-    )
-
-    print(
-        f"Content-Type               : "
-        f"{result['content_type']}"
-    )
-
-    print()
-    print("Response:")
-    print(result["body"])
-
-
-# ============================================================
-# COLD VS WARM COMPARISON
-# ============================================================
-
-def print_delta(
-    name,
+def print_comparison(
     cold,
     warm,
+    mode,
 ):
-    if (
-        cold is None
-        or warm is None
-    ):
-        print(
-            f"{name:30}: N/A"
-        )
-        return
-
-    delta = cold - warm
-
-    ratio = (
-        cold / warm
-        if warm > 0
-        else 0
-    )
-
+    print()
+    print("=" * 80)
     print(
-        f"{name:30}: "
-        f"cold={cold:.2f} ms  "
-        f"warm={warm:.2f} ms  "
-        f"delta={delta:.2f} ms  "
-        f"ratio={ratio:.2f}x"
+        f"{mode.upper()} "
+        "COLD VS WARM"
     )
+    print("=" * 80)
+
+    metrics = [
+        (
+            "Connection / startup",
+            "connection_startup_ms",
+        ),
+        (
+            "Connection -> response",
+            "connection_response_ms",
+        ),
+        (
+            "Connection -> transcription",
+            "connection_transcription_ms",
+        ),
+        (
+            "E2E TTFB",
+            "e2e_ttfb_ms",
+        ),
+        (
+            "E2E TTFT/TTFA",
+            "e2e_ttft_ms",
+        ),
+        (
+            "E2E TOTAL",
+            "e2e_total_ms",
+        ),
+    ]
+
+    for label, key in metrics:
+
+        if mode == "websocket":
+
+            cold_value = getattr(
+                cold,
+                key,
+            )
+
+            warm_value = getattr(
+                warm,
+                key,
+            )
+
+        else:
+
+            cold_value = cold[key]
+            warm_value = warm[key]
+
+        delta = (
+            cold_value
+            - warm_value
+        )
+
+        ratio = (
+            cold_value
+            / warm_value
+            if warm_value > 0
+            else 0
+        )
+
+        print(
+            f"{label:29}: "
+            f"cold={cold_value:.2f} ms | "
+            f"warm={warm_value:.2f} ms | "
+            f"delta={delta:.2f} ms | "
+            f"{ratio:.2f}x"
+        )
 
 
-async def run_websocket_tests(args):
+# =============================================================================
+# WEBSOCKET MULTI-RUN
+# =============================================================================
+
+async def websocket_runs(args):
 
     results = []
 
-    for index in range(
-        args.runs
+    for run_number in range(
+        1,
+        args.runs + 1,
     ):
 
-        if index == 0:
-            label = "COLD-CANDIDATE"
-        else:
-            label = "WARM"
+        label = (
+            "COLD-CANDIDATE"
+            if run_number == 1
+            else "WARM"
+        )
 
-        metrics = (
-            await websocket_test_once(
-                args.url,
-                args.file,
-                args.language,
-                args.realtime,
+        print()
+        print(
+            f"[info] Starting "
+            f"WebSocket run "
+            f"{run_number}/{args.runs} "
+            f"[{label}]"
+        )
+
+        result = (
+            await run_websocket_once(
+                url=args.url,
+                file_path=args.file,
+                language=args.language,
+                realtime=args.realtime,
             )
         )
 
-        results.append(metrics)
-
-        print_websocket_metrics(
-            index + 1,
-            label,
-            metrics,
+        results.append(
+            result
         )
 
-        if index + 1 < args.runs:
+        print_latency(
+            title=(
+                f"WEBSOCKET LATENCY - "
+                f"RUN {run_number} "
+                f"[{label}]"
+            ),
+
+            connection_startup=(
+                result.connection_startup_ms
+            ),
+
+            connection_response=(
+                result.connection_response_ms
+            ),
+
+            connection_transcription=(
+                result.connection_transcription_ms
+            ),
+
+            e2e_ttfb=(
+                result.e2e_ttfb_ms
+            ),
+
+            e2e_ttft=(
+                result.e2e_ttft_ms
+            ),
+
+            e2e_total=(
+                result.e2e_total_ms
+            ),
+        )
+
+        print(
+            f"First server event          : "
+            f"{result.first_event_type or 'N/A'}"
+        )
+
+        if result.first_partial:
+
+            print(
+                f"First partial               : "
+                f"{result.first_partial}"
+            )
+
+        if result.first_final:
+
+            print(
+                f"First final                 : "
+                f"{result.first_final}"
+            )
+
+        if run_number < args.runs:
+
             print(
                 f"\n[info] Waiting "
-                f"{args.delay}s before "
-                "next warm test..."
+                f"{args.delay:.1f}s..."
             )
 
             await asyncio.sleep(
@@ -818,73 +1342,54 @@ async def run_websocket_tests(args):
 
     if len(results) >= 2:
 
-        cold = results[0]
-        warm = results[1]
-
-        print()
-        print("=" * 80)
-        print(
-            "WEBSOCKET COLD vs WARM"
-        )
-        print("=" * 80)
-
-        print_delta(
-            "WS handshake",
-            cold.connect_ms,
-            warm.connect_ms,
-        )
-
-        print_delta(
-            "First server event",
-            cold.first_event_from_start_ms,
-            warm.first_event_from_start_ms,
-        )
-
-        print_delta(
-            "First partial from start",
-            cold.first_partial_from_start_ms,
-            warm.first_partial_from_start_ms,
-        )
-
-        print_delta(
-            "First partial from audio",
-            cold.first_partial_from_audio_ms,
-            warm.first_partial_from_audio_ms,
-        )
-
-        print_delta(
-            "First final from start",
-            cold.first_final_from_start_ms,
-            warm.first_final_from_start_ms,
+        print_comparison(
+            results[0],
+            results[1],
+            "websocket",
         )
 
 
-def run_openai_tests(args):
+# =============================================================================
+# OPENAI MULTI-RUN
+# =============================================================================
+
+def openai_runs(args):
 
     endpoint = (
         args.openai_url
-        or get_openai_url(
+        or
+        ws_to_openai_url(
             args.url
         )
     )
 
     print(
-        "[info] OpenAI endpoint:",
-        endpoint,
+        f"[info] OpenAI endpoint: "
+        f"{endpoint}"
     )
 
     results = []
 
-    for index in range(
-        args.runs
+    for run_number in range(
+        1,
+        args.runs + 1,
     ):
 
-        if index == 0:
-            label = "COLD-CANDIDATE"
-        else:
-            label = "WARM"
+        label = (
+            "COLD-CANDIDATE"
+            if run_number == 1
+            else "WARM"
+        )
 
-        result = openai_test_once(
+        print()
+        print(
+            f"[info] Starting "
+            f"OpenAI-compatible run "
+            f"{run_number}/{args.runs} "
+            f"[{label}]"
+        )
+
+        result = run_openai_once(
             endpoint=endpoint,
             file_path=args.file,
             model=args.model,
@@ -895,20 +1400,77 @@ def run_openai_tests(args):
             timeout=args.timeout,
         )
 
-        results.append(result)
-
-        print_openai_metrics(
-            index + 1,
-            label,
-            result,
+        results.append(
+            result
         )
 
-        if index + 1 < args.runs:
+        print_latency(
+            title=(
+                "OPENAI COMPATIBLE LATENCY - "
+                f"RUN {run_number} "
+                f"[{label}]"
+            ),
+
+            connection_startup=(
+                result[
+                    "connection_startup_ms"
+                ]
+            ),
+
+            connection_response=(
+                result[
+                    "connection_response_ms"
+                ]
+            ),
+
+            connection_transcription=(
+                result[
+                    "connection_transcription_ms"
+                ]
+            ),
+
+            e2e_ttfb=(
+                result[
+                    "e2e_ttfb_ms"
+                ]
+            ),
+
+            e2e_ttft=(
+                result[
+                    "e2e_ttft_ms"
+                ]
+            ),
+
+            e2e_total=(
+                result[
+                    "e2e_total_ms"
+                ]
+            ),
+        )
+
+        print(
+            f"HTTP Status                 : "
+            f"{result['status']}"
+        )
+
+        print(
+            f"Content-Type                : "
+            f"{result['content_type']}"
+        )
+
+        print()
+        print("TRANSCRIPTION")
+        print("-" * 80)
+
+        print(
+            result["response"]
+        )
+
+        if run_number < args.runs:
 
             print(
                 f"\n[info] Waiting "
-                f"{args.delay}s before "
-                "warm request..."
+                f"{args.delay:.1f}s..."
             )
 
             time.sleep(
@@ -917,55 +1479,56 @@ def run_openai_tests(args):
 
     if len(results) >= 2:
 
-        cold = results[0]
-        warm = results[1]
-
-        print()
-        print("=" * 80)
-        print(
-            "OPENAI-COMPATIBLE "
-            "COLD vs WARM"
-        )
-        print("=" * 80)
-
-        print_delta(
-            "Response headers",
-            cold["headers_ms"],
-            warm["headers_ms"],
-        )
-
-        print_delta(
-            "Total REST latency",
-            cold["total_ms"],
-            warm["total_ms"],
+        print_comparison(
+            results[0],
+            results[1],
+            "openai",
         )
 
 
-# ============================================================
+# =============================================================================
 # MAIN
-# ============================================================
+# =============================================================================
 
 def main():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Cloud Run cold-start tester "
-            "for Nemotron ASR"
+            "Python 3.11 Cloud Run cold-start "
+            "latency tester for Nemotron ASR"
         )
     )
 
     parser.add_argument(
         "--mode",
+        required=True,
         choices=[
             "websocket",
             "openai",
         ],
-        required=True,
     )
 
     parser.add_argument(
         "--file",
         required=True,
+        help="Audio WAV file",
+    )
+
+    parser.add_argument(
+        "--url",
+        default=SERVER_URL,
+        help=(
+            "WebSocket endpoint"
+        ),
+    )
+
+    parser.add_argument(
+        "--openai-url",
+        default=None,
+        help=(
+            "Optional explicit "
+            "/v1/audio/transcriptions URL"
+        ),
     )
 
     parser.add_argument(
@@ -974,19 +1537,10 @@ def main():
     )
 
     parser.add_argument(
-        "--url",
-        default=SERVER_URL,
-    )
-
-    parser.add_argument(
-        "--openai-url",
-        default=None,
-    )
-
-    parser.add_argument(
         "--model",
         default=(
-            "nemotron-3.5-asr-streaming-0.6b"
+            "nemotron-3.5-"
+            "asr-streaming-0.6b"
         ),
     )
 
@@ -999,60 +1553,75 @@ def main():
         "--runs",
         type=int,
         default=2,
+        help=(
+            "Number of tests. "
+            "Run 1 = cold candidate; "
+            "Run 2+ = warm."
+        ),
     )
 
     parser.add_argument(
         "--delay",
         type=float,
         default=2.0,
+        help=(
+            "Delay between test runs"
+        ),
     )
 
     parser.add_argument(
         "--timeout",
         type=float,
-        default=240.0,
+        default=240,
     )
 
     parser.add_argument(
         "--realtime",
         action="store_true",
+        help=(
+            "Send WebSocket audio "
+            "at real-time speed"
+        ),
     )
 
     args = parser.parse_args()
 
     print()
+    print("=" * 80)
+    print("CLOUD RUN COLD START TEST")
+    print("=" * 80)
+
     print(
-        "IMPORTANT:"
+        "[info] No /health request "
+        "will be sent."
     )
 
     print(
-        "- This script does NOT call /health."
+        "[info] Run 1 is treated as "
+        "COLD-CANDIDATE."
     )
 
     print(
-        "- Run #1 is a COLD-START CANDIDATE."
+        "[info] Run 2+ are immediate "
+        "WARM comparisons."
     )
 
     print(
-        "- Run #2+ are immediate WARM comparisons."
-    )
-
-    print(
-        "- Client-only testing cannot prove "
-        "that Cloud Run had scaled to zero."
+        "[info] Make sure nothing has "
+        "called the service before Run 1."
     )
 
     if args.mode == "websocket":
 
         asyncio.run(
-            run_websocket_tests(
+            websocket_runs(
                 args
             )
         )
 
     else:
 
-        run_openai_tests(
+        openai_runs(
             args
         )
 
