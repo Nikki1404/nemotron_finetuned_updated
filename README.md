@@ -82,3 +82,4 @@ cd /home/CORP/re_nikitav/nemotron_finetuned && python3 client.py --file raw_wavs
 ```bash
 cd /home/CORP/re_nikitav/nemotron_finetuned && curl -X POST "http://localhost:8003/v1/audio/transcriptions" -F "file=@raw_wavs/withdraw_money.wav" -F "model=nemotron-3.5-asr-streaming-0.6b" -F "language=auto"
 ```
+## api_key_nvidia-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
